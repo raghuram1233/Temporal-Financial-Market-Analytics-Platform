@@ -1,0 +1,22 @@
+# Web application
+Flask==3.0.3
+Flask-Cors==4.0.1
+Flask-WTF==1.2.1
+gunicorn==22.0.0
+
+# Database
+psycopg2-binary==2.9.9
+
+# Security
+bcrypt==4.1.3
+
+# Configuration
+python-dotenv==1.0.1
+
+# Background jobs
+APScheduler==3.10.4
+
+# Market data ingestion
+requests==2.32.3
+yfinance==0.2.40
+pandas==2.2.2

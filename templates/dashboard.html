@@ -1,0 +1,835 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="main-wrapper">
+    <div class="header-top">
+        <h1>{{ 'Overview' if page == 'home' else page|capitalize }}</h1>
+        <div class="user-badge">
+            <span class="icon">👤</span>
+            <span>{{ session['username'] }}</span>
+        </div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Wallet Balance</h3>
+            <p class="value" id="global-wallet">$0.00</p>
+        </div>
+        <div class="stat-card">
+            <h3>Portfolio Value</h3>
+            <p class="value" id="global-portfolio">$0.00</p>
+        </div>
+        <div class="stat-card">
+            <h3>Realized P&L</h3>
+            <p class="value" id="global-realized-pl">$0.00</p>
+        </div>
+        <div class="stat-card">
+            <h3>Unrealized P&L</h3>
+            <p class="value" id="global-unrealized-pl">$0.00</p>
+        </div>
+    </div>
+
+    <div class="page-content">
+        {% if page == 'home' %}
+        <div class="content-section">
+            <h3>Wealth Snapshot</h3>
+            <div class="wealth-summary">
+                <div class="wealth-item">
+                    <h4>Total Invested</h4>
+                    <div class="value" id="home-invested">$0.00</div>
+                </div>
+                <div class="wealth-item">
+                    <h4>Current Value</h4>
+                    <div class="value" id="home-current">$0.00</div>
+                </div>
+                <div class="wealth-item">
+                    <h4>Total Returns</h4>
+                    <div class="value" id="home-returns">$0.00 (0.00%)</div>
+                </div>
+                <div class="wealth-item">
+                    <h4>Cash Balance</h4>
+                    <div class="value" id="home-cash">$0.00</div>
+                </div>
+            </div>
+            <div class="wallet-actions">
+                <input type="number" id="wallet-amount" min="0.01" step="0.01" placeholder="Enter amount" />
+                <button class="trade-btn" type="button" onclick="handleWalletAction('deposit')">Deposit</button>
+                <button class="trade-btn wallet-withdraw-btn" type="button" onclick="handleWalletAction('withdraw')">Withdraw</button>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if page == 'markets' %}
+        <div class="exchange-grid">
+            <div class="content-section" style="padding: 0;">
+                <div style="padding: 1.5rem 1.5rem 0.5rem 1.5rem;">
+                    <h3 style="margin: 0 0 1rem 0;">Market Assets</h3>
+                </div>
+                <div class="search-container">
+                    <input type="text" id="assetSearch" class="search-input" placeholder="Search stocks or crypto..." oninput="filterAssets()">
+                </div>
+                <div class="market-grid" id="market-list">
+                    <!-- Loaded via JS -->
+                </div>
+            </div>
+            <div class="content-section market-center-panel">
+                <h3 id="selected-asset-title">Select an asset to view market</h3>
+                <div class="chart-tabs">
+                    <button class="tab-btn market-tab active" onclick="setChartPeriod('1D')">1D</button>
+                    <button class="tab-btn market-tab" onclick="setChartPeriod('1M')">1M</button>
+                    <button class="tab-btn market-tab" onclick="setChartPeriod('3M')">3M</button>
+                    <button class="tab-btn market-tab" onclick="setChartPeriod('6M')">6M</button>
+                    <button class="tab-btn market-tab" onclick="setChartPeriod('1Y')">1Y</button>
+                </div>
+                <div style="height: 430px; position: relative;">
+                    <canvas id="assetPriceChart"></canvas>
+                </div>
+                <div class="market-bottom-grid">
+                    <div class="micro-panel">
+                        <h4>Order Book</h4>
+                        <table class="micro-table">
+                            <thead>
+                                <tr><th>Bid Qty</th><th>Bid</th><th>Ask</th><th>Ask Qty</th></tr>
+                            </thead>
+                            <tbody id="orderbook-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="micro-panel">
+                        <h4>Recent Trades</h4>
+                        <table class="micro-table">
+                            <thead>
+                                <tr><th>Time</th><th>Side</th><th>Price</th><th>Qty</th></tr>
+                            </thead>
+                            <tbody id="market-trades-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="content-section exchange-side-panel">
+                <div class="micro-panel">
+                    <h4>Quick Trade</h4>
+                    <form id="marketTradeForm">
+                        <div class="form-group">
+                            <label>Type</label>
+                            <div class="trade-type">
+                                <label><input type="radio" name="marketOrderType" value="buy" checked> Buy</label>
+                                <label><input type="radio" name="marketOrderType" value="sell"> Sell</label>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Price</label>
+                            <input type="text" id="market-trade-price" readonly value="$0.00">
+                        </div>
+                        <div class="form-group">
+                            <label>Quantity</label>
+                            <input type="number" id="market-trade-qty" step="0.00001" min="0.00001" placeholder="0.00000" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Order Kind</label>
+                            <select id="market-order-kind">
+                                <option value="market">Market</option>
+                                <option value="limit">Limit</option>
+                                <option value="stop_loss">Stop Loss</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Target Price (for limit/stop-loss)</label>
+                            <input type="number" id="market-target-price" step="0.00001" placeholder="Optional for market">
+                        </div>
+                        <div class="form-group">
+                            <label>Expires At (optional)</label>
+                            <input type="datetime-local" id="market-expires-at">
+                        </div>
+                        <button type="submit" class="trade-btn">Submit</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if page == 'portfolio' %}
+        <div class="content-section">
+            <h3>Current Holdings</h3>
+            <table id="portfolioTable">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Quantity</th>
+                        <th>Avg Buy Price</th>
+                        <th>Current Price</th>
+                        <th>Current Value</th>
+                        <th>P/L</th>
+                    </tr>
+                </thead>
+                <tbody><!-- Loaded via JS --></tbody>
+            </table>
+        </div>
+        <div class="content-section">
+            <h3>Wallet History</h3>
+            <table id="walletHistoryTable">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Type</th>
+                        <th>Amount</th>
+                        <th>Balance Before</th>
+                        <th>Balance After</th>
+                    </tr>
+                </thead>
+                <tbody><!-- Loaded via JS --></tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {% if page == 'trade' %}
+        <div class="content-section">
+            <div class="trade-form">
+                <h3>Place Market Order</h3>
+                <form id="tradeForm">
+                    <div class="form-group">
+                        <label>Asset</label>
+                        <select id="assetSelect" required onchange="updateTradePrice()">
+                            <option value="">Select Asset</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Transaction Type</label>
+                        <div class="trade-type">
+                            <label><input type="radio" name="orderType" value="buy" checked> Buy</label>
+                            <label><input type="radio" name="orderType" value="sell"> Sell</label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Quantity</label>
+                        <input type="number" id="quantity" step="0.00001" placeholder="0.00" required oninput="calculateTotal()">
+                    </div>
+                    <div class="form-group">
+                        <label>Order Kind</label>
+                        <select id="order-kind">
+                            <option value="market">Market</option>
+                            <option value="limit">Limit</option>
+                            <option value="stop_loss">Stop Loss</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Target Price (for limit/stop-loss)</label>
+                        <input type="number" id="target-price" step="0.00001" placeholder="Optional for market">
+                    </div>
+                    <div class="form-group">
+                        <label>Expires At (optional)</label>
+                        <input type="datetime-local" id="expires-at">
+                    </div>
+                    <div class="form-group">
+                        <p>Current Price: <span id="current-trade-price">$0.00</span></p>
+                        <p>Estimated Total: <span id="estimated-total">$0.00</span></p>
+                    </div>
+                    <button type="submit" class="trade-btn">Execute Trade</button>
+                </form>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if page == 'analytics' %}
+        <div class="analytics-grid">
+            <div class="content-section">
+                <h3>Global Leaderboard</h3>
+                <p class="subtitle">Top 10 users by total P/L</p>
+                <table id="leaderboardTable">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Username</th>
+                            <th>Total P/L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboard-body"><!-- Loaded via JS --></tbody>
+                </table>
+            </div>
+
+            <div class="content-section">
+                <h3>Most Traded Assets</h3>
+                <p class="subtitle">Top 10 assets by trade count</p>
+                <table id="assetStatsTable">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Trades</th>
+                            <th>Total Volume</th>
+                        </tr>
+                    </thead>
+                    <tbody id="asset-stats-body"><!-- Loaded via JS --></tbody>
+                </table>
+            </div>
+
+            <div class="content-section full-width">
+                <h3>Advanced Indicators</h3>
+                <div class="form-group" style="max-width: 300px; margin-bottom: 1rem;">
+                    <select id="indicatorAssetSelect" class="search-input" onchange="updateIndicatorChart()">
+                        <option value="">Select Asset</option>
+                    </select>
+                </div>
+                <div class="indicator-charts">
+                    <div style="height: 350px;">
+                        <h4>Price vs 7-Day SMA</h4>
+                        <canvas id="smaChart"></canvas>
+                    </div>
+                    <div style="height: 350px;">
+                        <h4>Volatility Index</h4>
+                        <canvas id="volatilityChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if page == 'transactions' %}
+        <div class="content-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h3 style="margin: 0;">Transaction History</h3>
+                <button class="tab-btn" onclick="loadTransactions()">Refresh</button>
+            </div>
+            <table id="transactionTable">
+                <thead>
+                    <tr>
+                        <th>Date & Time</th>
+                        <th>Symbol</th>
+                        <th>Type</th>
+                        <th>Quantity</th>
+                        <th>Price</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody id="transaction-body"><!-- Loaded via JS --></tbody>
+            </table>
+        </div>
+        {% endif %}
+
+    </div>
+</div>
+
+<script>
+    const currentPage = "{{ page }}";
+    let assetChart, smaChart, volatilityChart;
+    let pricesData = [];
+    let selectedAssetId = null;
+    let selectedAssetSymbol = "";
+    let selectedAssetName = "";
+    let chartPeriod = "1D";
+
+    async function loadAnalytics() {
+        if (currentPage !== 'analytics') return;
+
+        // Leaderboard
+        const lbRes = await fetch('/api/analytics/leaderboard');
+        const lbData = await lbRes.json();
+        document.getElementById('leaderboard-body').innerHTML = lbData.map((d, i) => `
+            <tr>
+                <td>${i + 1}</td>
+                <td><strong>${escapeHtml(d.username)}</strong></td>
+                <td class="${d.total_pl >= 0 ? 'pos' : 'neg'}">$${d.total_pl.toFixed(2)}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="3">No leaderboard data</td></tr>';
+
+        // Asset Stats
+        const asRes = await fetch('/api/analytics/asset_stats');
+        const asData = await asRes.json();
+        document.getElementById('asset-stats-body').innerHTML = asData.map(d => `
+            <tr>
+                <td><strong>${escapeHtml(d.symbol)}</strong></td>
+                <td>${d.count}</td>
+                <td>$${d.volume.toLocaleString()}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="3">No asset stats data</td></tr>';
+
+        // Populate Indicator Select
+        const select = document.getElementById('indicatorAssetSelect');
+        if (select && select.options.length <= 1) {
+            pricesData.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.asset_id;
+                opt.text = `${escapeHtml(p.symbol)} (${p.name || "Asset"})`;
+                select.add(opt);
+            });
+            // Select first asset by default
+            if (pricesData.length > 0) {
+                select.value = pricesData[0].asset_id;
+                updateIndicatorChart();
+            }
+        }
+    }
+
+    async function updateIndicatorChart() {
+        const assetId = document.getElementById('indicatorAssetSelect').value;
+        if (!assetId) return;
+
+        const res = await fetch(`/api/analytics/indicators/${assetId}`);
+        const data = await res.json();
+
+        const labels = data.map(d => new Date(d.time).toLocaleDateString([], { day: '2-digit', month: 'short' }));
+        const prices = data.map(d => d.price);
+        const smas = data.map(d => d.sma_7);
+        const volatilities = data.map(d => d.volatility);
+
+        // SMA Chart
+        const ctxSma = document.getElementById('smaChart').getContext('2d');
+        if (smaChart) smaChart.destroy();
+        smaChart = new Chart(ctxSma, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'Price', data: prices, borderColor: '#00d09c', borderWidth: 3, pointRadius: 4, fill: false },
+                    { label: '7-Day SMA', data: smas, borderColor: '#ff9f43', borderWidth: 3, borderDash: [5, 5], pointRadius: 0, fill: false }
+                ]
+            },
+            options: { 
+                responsive: true, 
+                maintainAspectRatio: false, 
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.04)' } },
+                    y: { position: 'right', grid: { color: 'rgba(255,255,255,0.04)' } }
+                }
+            }
+        });
+
+        // Volatility Chart
+        const ctxVol = document.getElementById('volatilityChart').getContext('2d');
+        if (volatilityChart) volatilityChart.destroy();
+        volatilityChart = new Chart(ctxVol, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{ 
+                    label: 'Volatility', 
+                    data: volatilities, 
+                    borderColor: '#ff4d4d', 
+                    borderWidth: 3, 
+                    fill: true, 
+                    backgroundColor: 'rgba(255, 77, 77, 0.15)', 
+                    pointRadius: 4 
+                }]
+            },
+            options: { 
+                responsive: true, 
+                maintainAspectRatio: false, 
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.04)' } },
+                    y: { position: 'right', grid: { color: 'rgba(255,255,255,0.04)' } }
+                }
+            }
+        });
+    }
+
+    function setChartPeriod(period) {
+        chartPeriod = period;
+        document.querySelectorAll('.market-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.innerText === period);
+        });
+        if (selectedAssetId) updateAssetChart();
+    }
+
+
+    function filterAssets() {
+        const query = document.getElementById('assetSearch').value.toLowerCase();
+        const list = document.getElementById('market-list');
+        if (!list) return;
+
+        const filtered = pricesData.filter(p => 
+            p.symbol.toLowerCase().includes(query) ||
+            (p.name || "").toLowerCase().includes(query)
+        );
+
+        list.innerHTML = filtered.map(p => `
+            <div class="asset-card ${selectedAssetId === p.asset_id ? 'active' : ''}" onclick="selectAsset(${p.asset_id})">
+                <div class="asset-info">
+                    <span class="symbol">${escapeHtml(p.symbol)}</span>
+                    <span class="name">${escapeHtml(p.name || 'Market Asset')}</span>
+                </div>
+                <div class="asset-price">$${p.price.toFixed(2)}</div>
+            </div>
+        `).join('');
+    }
+
+    function fmtUsd(value) {
+        return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    async function loadHomeSnapshot() {
+        if (currentPage !== 'home') return;
+        const res = await fetch('/api/portfolio/stats');
+        const stats = await res.json();
+        const invested = Number(stats.invested || 0);
+        const current = Number(stats.current_value || 0);
+        const cash = Number(stats.wallet_balance || 0);
+        const returns = current - invested;
+        const returnsPct = invested > 0 ? (returns / invested) * 100 : 0;
+
+        document.getElementById('home-invested').innerText = fmtUsd(invested);
+        document.getElementById('home-current').innerText = fmtUsd(current);
+        document.getElementById('home-cash').innerText = fmtUsd(cash);
+
+        const returnsElem = document.getElementById('home-returns');
+        returnsElem.innerText = `${fmtUsd(returns)} (${returnsPct.toFixed(2)}%)`;
+        returnsElem.className = `value ${returns >= 0 ? 'pos' : 'neg'}`;
+    }
+
+    async function handleWalletAction(action) {
+        const input = document.getElementById('wallet-amount');
+        if (!input) return;
+        const amount = parseFloat(input.value);
+        if (!amount || amount <= 0) {
+            alert('Please enter a valid amount.');
+            return;
+        }
+
+        const endpoint = action === 'deposit' ? '/api/wallet/deposit' : '/api/wallet/withdraw';
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            input.value = '';
+            alert(data.message || 'Wallet updated');
+            refreshDashboard();
+        } else {
+            alert(data.error || 'Wallet update failed');
+        }
+    }
+
+    async function loadTransactions() {
+        const res = await fetch('/api/transactions');
+        const data = await res.json();
+        const tbody = document.getElementById('transaction-body');
+        if (!tbody) return;
+
+        tbody.innerHTML = data.map(t => `
+            <tr>
+                <td>${new Date(t.time).toLocaleString()}</td>
+                <td><strong>${escapeHtml(t.symbol)}</strong></td>
+                <td><span class="badge ${t.type}">${t.type.toUpperCase()}</span></td>
+                <td>${t.quantity.toFixed(5)}</td>
+                <td>$${t.price.toFixed(2)}</td>
+                <td>$${t.total.toFixed(2)}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="6" style="text-align:center">No transactions yet</td></tr>';
+    }
+
+    async function refreshDashboard() {
+        try {
+            const [wRes, pRes, mRes, pnlRes] = await Promise.all([
+                fetch('/api/wallet'),
+                fetch('/api/portfolio'),
+                fetch('/api/prices'),
+                fetch('/api/analytics/pnl_summary')
+            ]);
+
+            const wallet = await wRes.json();
+            const portfolio = await pRes.json();
+            const pnlSummary = await pnlRes.json();
+            pricesData = await mRes.json();
+
+            document.getElementById('global-wallet').innerText = fmtUsd(wallet.balance);
+            
+            let totalVal = 0;
+            portfolio.forEach(i => {
+                totalVal += i.current_value;
+            });
+
+            document.getElementById('global-portfolio').innerText = fmtUsd(totalVal);
+            
+            const rplElem = document.getElementById('global-realized-pl');
+            rplElem.innerText = fmtUsd(pnlSummary.realized_pnl);
+            rplElem.className = `value ${pnlSummary.realized_pnl >= 0 ? 'pos' : 'neg'}`;
+
+            const uplElem = document.getElementById('global-unrealized-pl');
+            uplElem.innerText = fmtUsd(pnlSummary.unrealized_pnl);
+            uplElem.className = `value ${pnlSummary.unrealized_pnl >= 0 ? 'pos' : 'neg'}`;
+
+            if (currentPage === "markets") {
+                filterAssets(); // Keep search filter active
+                if (!selectedAssetId && pricesData.length > 0) {
+                    selectAsset(pricesData[0].asset_id);
+                }
+            }
+
+            const tbody = document.querySelector('#portfolioTable tbody');
+            if (tbody) {
+                tbody.innerHTML = portfolio.map(item => `
+                    <tr>
+                        <td><strong>${escapeHtml(item.symbol)}</strong></td>
+                        <td>${item.quantity.toFixed(5)}</td>
+                        <td>$${item.avg_price.toFixed(2)}</td>
+                        <td>$${item.current_price.toFixed(2)}</td>
+                        <td>$${item.current_value.toFixed(2)}</td>
+                        <td class="${item.unrealized_pl >= 0 ? 'pos' : 'neg'}">$${item.unrealized_pl.toFixed(2)}</td>
+                    </tr>
+                `).join('');
+            }
+
+            const select = document.getElementById('assetSelect');
+            if (select && select.options.length <= 1) {
+                pricesData.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.asset_id;
+                    opt.text = `${escapeHtml(p.symbol)} (${p.name || "Asset"})`;
+                    select.add(opt);
+                });
+            }
+
+            if (currentPage === "markets" && selectedAssetId) syncMarketTradePrice();
+            if (currentPage === "home") loadHomeSnapshot();
+            if (currentPage === "transactions") loadTransactions();
+            if (currentPage === "portfolio") loadWalletHistory();
+            if (currentPage === "analytics") loadAnalytics();
+
+        } catch (err) {
+            console.error("Refresh Error:", err);
+        }
+    }
+
+    async function loadWalletHistory() {
+        const res = await fetch('/api/wallet/history');
+        const data = await res.json();
+        const tbody = document.querySelector('#walletHistoryTable tbody');
+        if (!tbody) return;
+
+        tbody.innerHTML = data.map(item => {
+            const change = item.change;
+            const type = change >= 0 ? 'Deposit' : 'Withdrawal';
+            return `
+                <tr>
+                    <td>${new Date(item.timestamp).toLocaleString()}</td>
+                    <td class="${change >= 0 ? 'pos' : 'neg'}">${type}</td>
+                    <td class="${change >= 0 ? 'pos' : 'neg'}">$${Math.abs(change).toFixed(2)}</td>
+                    <td>$${item.old_value.toFixed(2)}</td>
+                    <td>$${item.new_value.toFixed(2)}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function rangeForPeriod(period) {
+        if (period === "1D") return "1d";
+        if (period === "1M") return "1mo";
+        if (period === "3M") return "3mo";
+        if (period === "6M") return "6mo";
+        return "1y";
+    }
+
+    async function updateAssetChart() {
+        if (!selectedAssetId) return;
+        const endpoint = chartPeriod === "1D"
+            ? `/api/analytics/price_history/${selectedAssetId}`
+            : `/api/analytics/ohlc/${selectedAssetId}?period=${chartPeriod}`;
+        
+        const res = await fetch(endpoint);
+        const data = await res.json();
+        
+        const ctx = document.getElementById('assetPriceChart').getContext('2d');
+        if (assetChart) assetChart.destroy();
+
+        const labels = data.map(d => {
+            const date = new Date(d.time);
+            return chartPeriod === "1D"
+                ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : date.toLocaleDateString([], { day: '2-digit', month: 'short' });
+        });
+        const values = data.map(d => chartPeriod === "1D" ? d.price : d.close);
+
+        assetChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: `${selectedAssetSymbol} Price`,
+                    data: values,
+                    borderColor: '#00d09c',
+                    borderWidth: 2,
+                    tension: 0.25,
+                    fill: true,
+                    backgroundColor: 'rgba(0, 208, 156, 0.08)',
+                    pointRadius: 0,
+                    pointHoverRadius: 5
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.04)' } },
+                    y: { position: 'right', grid: { color: 'rgba(255,255,255,0.04)' } }
+                }
+            }
+        });
+    }
+
+    async function loadOrderBook() {
+        if (!selectedAssetId) return;
+        const res = await fetch(`/api/analytics/orderbook/${selectedAssetId}`);
+        const data = await res.json();
+        const tbody = document.getElementById('orderbook-body');
+        if (!tbody) return;
+
+        const levels = Math.max(data.bids?.length || 0, data.asks?.length || 0);
+        let rows = "";
+        for (let i = 0; i < levels; i++) {
+            const bid = data.bids?.[i];
+            const ask = data.asks?.[i];
+            rows += `<tr>
+                <td class="pos">${bid ? bid.quantity.toFixed(4) : "-"}</td>
+                <td class="pos">${bid ? "$" + bid.price.toFixed(2) : "-"}</td>
+                <td class="neg">${ask ? "$" + ask.price.toFixed(2) : "-"}</td>
+                <td class="neg">${ask ? ask.quantity.toFixed(4) : "-"}</td>
+            </tr>`;
+        }
+        tbody.innerHTML = rows || '<tr><td colspan="4" style="text-align:center">No data</td></tr>';
+    }
+
+    async function loadRecentMarketTrades() {
+        if (!selectedAssetId) return;
+        const res = await fetch(`/api/analytics/recent_trades/${selectedAssetId}`);
+        const data = await res.json();
+        const tbody = document.getElementById('market-trades-body');
+        if (!tbody) return;
+        tbody.innerHTML = data.map(t => `
+            <tr>
+                <td>${new Date(t.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</td>
+                <td class="${t.side === 'buy' ? 'pos' : 'neg'}">${String(t.side || '').toUpperCase()}</td>
+                <td class="${t.side === 'buy' ? 'pos' : 'neg'}">$${t.price.toFixed(2)}</td>
+                <td>${t.quantity.toFixed(4)}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="4" style="text-align:center">No trades</td></tr>';
+    }
+
+    function syncMarketTradePrice() {
+        const priceInput = document.getElementById('market-trade-price');
+        const selected = pricesData.find(p => p.asset_id == selectedAssetId);
+        if (priceInput && selected) {
+            priceInput.value = `$${selected.price.toFixed(2)}`;
+        }
+    }
+
+    function selectAsset(id) {
+        selectedAssetId = id;
+        const selected = pricesData.find(p => p.asset_id == id);
+        selectedAssetSymbol = selected ? selected.symbol : "";
+        selectedAssetName = selected ? (selected.name || "") : "";
+        document.getElementById('selected-asset-title').innerText = `${selectedAssetSymbol} ${selectedAssetName ? `(${selectedAssetName})` : ''} Market`;
+        filterAssets();
+        syncMarketTradePrice();
+        updateAssetChart();
+        loadOrderBook();
+        loadRecentMarketTrades();
+    }
+
+    function updateTradePrice() {
+        const assetId = document.getElementById('assetSelect').value;
+        const asset = pricesData.find(p => p.asset_id == assetId);
+        if (asset) {
+            document.getElementById('current-trade-price').innerText = `$${asset.price.toFixed(2)}`;
+            calculateTotal();
+        }
+    }
+
+    function calculateTotal() {
+        const assetId = document.getElementById('assetSelect').value;
+        const qty = parseFloat(document.getElementById('quantity').value) || 0;
+        const asset = pricesData.find(p => p.asset_id == assetId);
+        if (asset) {
+            const total = asset.price * qty;
+            document.getElementById('estimated-total').innerText = fmtUsd(total);
+        }
+    }
+
+    const tradeForm = document.getElementById('tradeForm');
+    if (tradeForm) {
+        tradeForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const assetId = document.getElementById('assetSelect').value;
+            const type = document.querySelector('input[name="orderType"]:checked').value;
+            const qty = parseFloat(document.getElementById('quantity').value);
+            const orderKind = document.getElementById('order-kind').value;
+            const targetPrice = document.getElementById('target-price').value;
+            const expiresAt = document.getElementById('expires-at').value;
+
+            const res = await fetch('/api/order', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    asset_id: assetId,
+                    order_type: type,
+                    quantity: qty,
+                    order_kind: orderKind,
+                    target_price: targetPrice ? parseFloat(targetPrice) : null,
+                    expires_at: expiresAt || null
+                })
+            });
+
+            if (res.ok) {
+                alert('Trade Executed Successfully!');
+                refreshDashboard();
+            } else {
+                const err = await res.json();
+                alert(err.error || 'Trade failed');
+            }
+        };
+    }
+
+    const marketTradeForm = document.getElementById('marketTradeForm');
+    if (marketTradeForm) {
+        marketTradeForm.onsubmit = async (e) => {
+            e.preventDefault();
+            if (!selectedAssetId) {
+                alert('Please select an asset first.');
+                return;
+            }
+            const type = document.querySelector('input[name="marketOrderType"]:checked').value;
+            const qty = parseFloat(document.getElementById('market-trade-qty').value);
+            const orderKind = document.getElementById('market-order-kind').value;
+            const targetPrice = document.getElementById('market-target-price').value;
+            const expiresAt = document.getElementById('market-expires-at').value;
+            const res = await fetch('/api/order', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    asset_id: selectedAssetId,
+                    order_type: type,
+                    quantity: qty,
+                    order_kind: orderKind,
+                    target_price: targetPrice ? parseFloat(targetPrice) : null,
+                    expires_at: expiresAt || null
+                })
+            });
+            if (res.ok) {
+                alert('Order placed');
+                document.getElementById('market-trade-qty').value = '';
+                refreshDashboard();
+                loadRecentMarketTrades();
+            } else {
+                const err = await res.json();
+                alert(err.error || 'Order failed');
+            }
+        };
+    }
+
+    async function dashboardLoop() { await refreshDashboard(); setTimeout(dashboardLoop, 1000); }
+    async function historyLoop() {
+        if (currentPage === "markets" && selectedAssetId) {
+            await Promise.all([
+                loadOrderBook(),
+                loadRecentMarketTrades(),
+                updateAssetChart()
+            ]);
+        }
+        setTimeout(historyLoop, 15000);
+    }
+
+    dashboardLoop();
+    historyLoop();
+</script>
+{% endblock %}

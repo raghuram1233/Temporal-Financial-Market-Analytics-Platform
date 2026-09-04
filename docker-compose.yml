@@ -1,0 +1,92 @@
+# One-command local stack:  docker compose up
+#
+# Brings up TimescaleDB with the schema already applied, the Flask API, and a
+# separate process for the background jobs.
+
+services:
+  db:
+    image: timescale/timescaledb:2.15.2-pg16
+    environment:
+      POSTGRES_DB: ${DB_NAME:-temporal}
+      POSTGRES_USER: ${DB_USER:-temporal}
+      POSTGRES_PASSWORD: ${DB_PASS:?set DB_PASS in .env}
+    ports:
+      # Host port 5433 by default so this never collides with a Postgres
+      # already listening on 5432.
+      - "${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Applied automatically the first time the volume is initialised.
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-temporal} -d ${DB_NAME:-temporal}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-temporal}
+      DB_USER: ${DB_USER:-temporal}
+      DB_PASS: ${DB_PASS:?set DB_PASS in .env}
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?set FLASK_SECRET_KEY in .env}
+      # Plain HTTP on localhost, so the Secure cookie flag must be relaxed.
+      # Set this to true behind TLS in any real deployment.
+      SESSION_COOKIE_SECURE: "false"
+      # Jobs belong to the worker service, not to each gunicorn worker.
+      ENABLE_SCHEDULER: "false"
+    ports:
+      - "${WEB_PORT:-5000}:5000"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["python", "-m", "backend.worker"]
+    # Inherits the image HEALTHCHECK, which probes an HTTP endpoint this
+    # process does not serve. Disable rather than report a false failure.
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-temporal}
+      DB_USER: ${DB_USER:-temporal}
+      DB_PASS: ${DB_PASS:?set DB_PASS in .env}
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?set FLASK_SECRET_KEY in .env}
+      DB_POOL_MAX: "5"
+    restart: unless-stopped
+
+  # Live market data. Opt in with:  docker compose --profile ingest up
+  ingest:
+    build: .
+    command: ["python", "-m", "scripts.ingest_data"]
+    # Inherits the image HEALTHCHECK, which probes an HTTP endpoint this
+    # process does not serve. Disable rather than report a false failure.
+    healthcheck:
+      disable: true
+    profiles: ["ingest"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-temporal}
+      DB_USER: ${DB_USER:-temporal}
+      DB_PASS: ${DB_PASS:?set DB_PASS in .env}
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?set FLASK_SECRET_KEY in .env}
+      DB_POOL_MAX: "5"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Temporal - DBMS Project</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial"></script>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <script src="{{ url_for('static', filename='js/csrf.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/util.js') }}"></script>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            GROWWWW
+        </div>
+        <nav class="sidebar-nav">
+            <a href="{{ url_for('pages.dashboard') }}" class="nav-item {{ 'active' if page == 'home' else '' }}">
+                <span class="icon">💰</span> Overview
+            </a>
+            <a href="{{ url_for('pages.markets') }}" class="nav-item {{ 'active' if page == 'markets' else '' }}">
+                <span class="icon">📊</span> Market Data
+            </a>
+            <a href="{{ url_for('pages.portfolio_page') }}" class="nav-item {{ 'active' if page == 'portfolio' else '' }}">
+                <span class="icon">💼</span> My Portfolio
+            </a>
+            <a href="{{ url_for('pages.trade_page') }}" class="nav-item {{ 'active' if page == 'trade' else '' }}">
+                <span class="icon">🔄</span> Trade
+            </a>
+            <a href="{{ url_for('pages.analytics_page') }}" class="nav-item {{ 'active' if page == 'analytics' else '' }}">
+                <span class="icon">📈</span> Market Analytics
+            </a>
+            <a href="{{ url_for('pages.transactions_page') }}" class="nav-item {{ 'active' if page == 'transactions' else '' }}">
+                <span class="icon">💳</span> Transactions
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <button type="button" class="nav-item nav-item-button" onclick="logout()">
+                <span class="icon">⏻</span> Logout
+            </button>
+        </div>
+    </div>
+
+    {% block content %}{% endblock %}
+</body>
+</html>

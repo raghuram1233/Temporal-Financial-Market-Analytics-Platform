@@ -1,0 +1,202 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    services:
+      # The trigger and stored-procedure logic cannot be meaningfully tested
+      # without a real TimescaleDB, so CI runs one as a service container.
+      timescaledb:
+        image: timescale/timescaledb:2.15.2-pg16
+        env:
+          POSTGRES_DB: temporal
+          POSTGRES_USER: temporal
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U temporal -d temporal"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: temporal
+      DB_USER: temporal
+      DB_PASS: ci-postgres-password
+      # Not a real secret: CI runs against a throwaway container. Production
+      # values come from the deployment environment, never from this file.
+      FLASK_SECRET_KEY: ci-only-key-0123456789abcdef0123456789abcdef
+      SESSION_COOKIE_SECURE: "false"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Apply schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f schema.sql
+        env:
+          DATABASE_URL: postgresql://temporal:ci-postgres-password@localhost:5432/temporal
+
+      - name: Apply migrations
+        run: python -m scripts.migrate
+
+      - name: Verify migrations are idempotent
+        run: |
+          python -m scripts.migrate --status
+          # A second run must find nothing pending.
+          python -m scripts.migrate | grep -q "up to date"
+
+      - name: Verify TimescaleDB features are present
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "SELECT hypertable_name FROM timescaledb_information.hypertables ORDER BY 1;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "SELECT view_name FROM timescaledb_information.continuous_aggregates;"
+        env:
+          DATABASE_URL: postgresql://temporal:ci-postgres-password@localhost:5432/temporal
+
+      - name: Run tests
+        run: pytest --cov=backend --cov-report=term-missing --cov-report=xml -q
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install audit tooling
+        run: pip install pip-audit bandit
+
+      - name: Fail if a real .env is committed
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env is tracked in git. Secrets must not be committed."
+            exit 1
+          fi
+          echo ".env is not tracked"
+
+      - name: Scan for hardcoded credential patterns
+        run: |
+          # config.py deliberately lists placeholder values in order to reject
+          # them, so it is excluded from this grep.
+          if grep -rnE '(password|passwd|secret[_-]?key)\s*=\s*["'"'"'][^"'"'"']{6,}' \
+               --include='*.py' backend/ scripts/ benchmarks/ \
+               | grep -v 'backend/config.py'; then
+            echo "::error::Possible hardcoded credential above."
+            exit 1
+          fi
+          echo "No hardcoded credentials found"
+
+      - name: Known vulnerabilities in dependencies
+        run: pip-audit -r requirements.txt --strict
+        continue-on-error: true
+
+      - name: Static security analysis
+        run: bandit -r backend/ scripts/ -ll
+
+  docker:
+    name: Docker stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env for compose
+        run: |
+          {
+            echo "DB_NAME=temporal"
+            echo "DB_USER=temporal"
+            echo "DB_PASS=compose-ci-password"
+            echo "FLASK_SECRET_KEY=ci-only-key-0123456789abcdef0123456789abcdef"
+            echo "SESSION_COOKIE_SECURE=false"
+            echo "DB_HOST_PORT=5433"
+          } > .env
+
+      - name: Build and start the stack
+        run: docker compose up -d --build
+
+      - name: Wait for the API to report healthy
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fs http://localhost:5000/healthz | grep -q '"status":"ok"'; then
+              echo "API healthy after ${i} attempts"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::API never became healthy"
+          docker compose logs
+          exit 1
+
+      - name: Apply migrations
+        run: docker compose exec -T web python -m scripts.migrate
+
+      - name: Seed demo data
+        run: docker compose exec -T web python -m scripts.seed_demo --days 30
+
+      - name: Smoke-test the running API
+        run: |
+          set -euo pipefail
+          count=$(curl -fs http://localhost:5000/api/prices \
+                  | python -c 'import json,sys; print(len(json.load(sys.stdin)))')
+          echo "Priced assets: $count"
+          test "$count" -eq 25
+          # Unauthenticated access must be refused.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/api/wallet)
+          test "$code" = "401"
+          # A POST without a CSRF token must be refused.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+                   -H 'Content-Type: application/json' -d '{"amount":1}' \
+                   http://localhost:5000/api/wallet/deposit)
+          test "$code" = "400"
+          echo "Smoke tests passed"
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+.vscode/
+.idea/
+README.md
+benchmarks/RESULTS.md
