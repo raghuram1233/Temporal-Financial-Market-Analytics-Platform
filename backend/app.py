@@ -7,7 +7,7 @@ pointed at a throwaway database.
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 
 import bcrypt
@@ -15,18 +15,38 @@ import psycopg2
 import yfinance as yf
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import (
-    Blueprint, Flask, jsonify, redirect,
-    render_template, request, session, url_for,
+    Blueprint,
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
 )
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_wtf.csrf import CSRFError, CSRFProtect
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import config, database
+from . import config, database, money
 
 logger = logging.getLogger(__name__)
 
 csrf = CSRFProtect()
 scheduler = BackgroundScheduler()
+
+# Declared at module scope because the @limiter.limit decorators below are
+# evaluated at import time; the storage backend is bound later in
+# create_app(). Keyed on the client IP - a username key would let an attacker
+# lock a victim out by guessing against their account deliberately.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[config.RATELIMIT_DEFAULT],
+    storage_uri=config.RATELIMIT_STORAGE_URI,
+    strategy="fixed-window",
+)
 
 pages = Blueprint("pages", __name__)
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -40,6 +60,7 @@ GENERIC_ERROR = "Something went wrong. Please try again."
 # Helpers
 # --------------------------------------------------------------------------
 
+
 def login_required(view):
     """Reject unauthenticated callers.
 
@@ -47,6 +68,7 @@ def login_required(view):
     Applying this centrally removes the per-route `if 'user_id' not in
     session` checks that previously had to be remembered by hand.
     """
+
     @wraps(view)
     def wrapped(*args, **kwargs):
         if "user_id" not in session:
@@ -54,6 +76,7 @@ def login_required(view):
                 return jsonify({"error": "Unauthorized"}), 401
             return redirect(url_for("pages.index"))
         return view(*args, **kwargs)
+
     return wrapped
 
 
@@ -93,25 +116,10 @@ def user_facing_db_error(exc, status=400):
     return db_error(exc, status=status)
 
 
-def parse_amount(raw):
-    """Validate a monetary amount from JSON. Returns (value, error)."""
-    if raw is None:
-        return None, "Amount is required"
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None, "Invalid amount"
-    # Rejects NaN and the infinities, which would otherwise reach NUMERIC.
-    if value != value or value in (float("inf"), float("-inf")):
-        return None, "Invalid amount"
-    if value <= 0:
-        return None, "Amount must be greater than zero"
-    return round(value, 2), None
-
-
 # --------------------------------------------------------------------------
 # Page routes
 # --------------------------------------------------------------------------
+
 
 @pages.route("/")
 def index():
@@ -180,7 +188,9 @@ def healthz():
 # Authentication
 # --------------------------------------------------------------------------
 
+
 @api.route("/register", methods=["POST"])
+@limiter.limit(config.RATELIMIT_REGISTER)
 def register():
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
@@ -194,15 +204,15 @@ def register():
     if "@" not in email or len(email) > 254:
         return jsonify({"error": "Enter a valid email address"}), 400
     if len(password) < config.MIN_PASSWORD_LENGTH:
-        return jsonify({
-            "error": f"Password must be at least {config.MIN_PASSWORD_LENGTH} characters"
-        }), 400
+        return jsonify(
+            {"error": f"Password must be at least {config.MIN_PASSWORD_LENGTH} characters"}
+        ), 400
     # bcrypt silently truncates past 72 bytes, which would make the tail of a
     # long passphrase meaningless. Reject rather than quietly weaken it.
     if len(password.encode("utf-8")) > config.MAX_PASSWORD_BYTES:
-        return jsonify({
-            "error": f"Password must be {config.MAX_PASSWORD_BYTES} bytes or fewer"
-        }), 400
+        return jsonify(
+            {"error": f"Password must be {config.MAX_PASSWORD_BYTES} bytes or fewer"}
+        ), 400
 
     hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -221,6 +231,10 @@ def register():
 
 
 @api.route("/login", methods=["POST"])
+# The one endpoint where an attacker gets unlimited free guesses otherwise.
+# bcrypt makes each attempt expensive for us as well as for them, so this
+# also caps the CPU a single IP can consume.
+@limiter.limit(config.RATELIMIT_LOGIN)
 def login():
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
@@ -263,13 +277,14 @@ def logout():
 # Wallet
 # --------------------------------------------------------------------------
 
+
 @api.route("/wallet", methods=["GET"])
 @login_required
 def get_wallet():
     balance = database.query_value(
         "SELECT balance FROM wallets WHERE user_id = %s", (current_user_id(),)
     )
-    return jsonify({"balance": float(balance or 0)})
+    return jsonify({"balance": money.money(balance)})
 
 
 def _wallet_operation(sql_function, amount):
@@ -284,20 +299,18 @@ def _wallet_operation(sql_function, amount):
         cur.execute(f"SELECT {sql_function}(%s, %s)", (user_id, amount))
         cur.execute("SELECT balance FROM wallets WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
-    return float(row[0]) if row else 0.0
+    return money.money(row[0]) if row else money.money(0)
 
 
 @api.route("/wallet/deposit", methods=["POST"])
 @login_required
 def deposit_wallet():
     data = request.get_json(silent=True) or {}
-    amount, error = parse_amount(data.get("amount"))
+    amount, error = money.to_decimal(data.get("amount"))
     if error:
         return jsonify({"error": error}), 400
     if amount > config.MAX_DEPOSIT:
-        return jsonify({
-            "error": f"Maximum deposit amount is ${config.MAX_DEPOSIT:,}"
-        }), 400
+        return jsonify({"error": f"Maximum deposit amount is ${config.MAX_DEPOSIT:,}"}), 400
 
     try:
         balance = _wallet_operation("deposit_money", amount)
@@ -310,7 +323,7 @@ def deposit_wallet():
 @login_required
 def withdraw_wallet():
     data = request.get_json(silent=True) or {}
-    amount, error = parse_amount(data.get("amount"))
+    amount, error = money.to_decimal(data.get("amount"))
     if error:
         return jsonify({"error": error}), 400
 
@@ -334,22 +347,27 @@ def get_wallet_history():
         """,
         (current_user_id(),),
     )
-    return jsonify([
-        {
-            "action": row[0],
-            "old_value": float(row[1]) if row[1] is not None else 0,
-            "new_value": float(row[2]) if row[2] is not None else 0,
-            "change": (float(row[2]) - float(row[1]))
-                      if row[1] is not None and row[2] is not None else 0,
-            "timestamp": row[3].isoformat(),
-            "context": row[4],
-        } for row in history
-    ])
+    return jsonify(
+        [
+            {
+                "action": row[0],
+                "old_value": money.money(row[1]),
+                "new_value": money.money(row[2]),
+                # Subtraction stays in Decimal: this is the difference of two
+                # balances, and doing it in float is how audit trails stop adding up.
+                "change": money.money(row[2]) - money.money(row[1]),
+                "timestamp": row[3].isoformat(),
+                "context": row[4],
+            }
+            for row in history
+        ]
+    )
 
 
 # --------------------------------------------------------------------------
 # Portfolio and trading
 # --------------------------------------------------------------------------
+
 
 @api.route("/portfolio", methods=["GET"])
 @login_required
@@ -365,17 +383,20 @@ def get_portfolio():
         """,
         (current_user_id(),),
     )
-    return jsonify([
-        {
-            "asset_id": r[0],
-            "symbol": r[1],
-            "quantity": float(r[2]),
-            "avg_price": float(r[3]),
-            "current_price": float(r[4]),
-            "current_value": float(r[5]),
-            "unrealized_pl": float(r[6]),
-        } for r in rows
-    ])
+    return jsonify(
+        [
+            {
+                "asset_id": r[0],
+                "symbol": r[1],
+                "quantity": money.money(r[2]),
+                "avg_price": money.money(r[3]),
+                "current_price": money.money(r[4]),
+                "current_value": money.money(r[5]),
+                "unrealized_pl": money.money(r[6]),
+            }
+            for r in rows
+        ]
+    )
 
 
 @api.route("/portfolio/stats", methods=["GET"])
@@ -393,17 +414,22 @@ def get_portfolio_stats():
         """,
         (user_id,),
     )
-    balance = float(database.query_value(
-        "SELECT balance FROM wallets WHERE user_id = %s", (user_id,), default=0
-    ) or 0)
+    balance = money.money(
+        database.query_value(
+            "SELECT balance FROM wallets WHERE user_id = %s", (user_id,), default=0
+        )
+    )
+    current_value = money.money(stats[1])
 
-    return jsonify({
-        "invested": float(stats[0]),
-        "current_value": float(stats[1]),
-        "total_pl": float(stats[2]),
-        "wallet_balance": balance,
-        "total_wealth": float(stats[1]) + balance,
-    })
+    return jsonify(
+        {
+            "invested": money.money(stats[0]),
+            "current_value": current_value,
+            "total_pl": money.money(stats[2]),
+            "wallet_balance": balance,
+            "total_wealth": current_value + balance,
+        }
+    )
 
 
 @api.route("/order", methods=["POST"])
@@ -422,13 +448,15 @@ def place_order():
 
     try:
         asset_id = int(asset_id)
-        quantity = float(quantity)
     except (TypeError, ValueError):
         return jsonify({"status": "error", "error": "Invalid asset or quantity"}), 400
 
-    # `not x > 0` rather than `x <= 0` so that NaN is also rejected.
-    if not quantity > 0:
-        return jsonify({"status": "error", "error": "Quantity must be greater than zero"}), 400
+    # Parsed as Decimal at the scale of orders.quantity. to_quantity rejects
+    # NaN, the infinities, and anything that would overflow the column.
+    quantity, error = money.to_quantity(quantity)
+    if error:
+        return jsonify({"status": "error", "error": error}), 400
+
     if order_type not in ("buy", "sell"):
         return jsonify({"status": "error", "error": "Invalid order type"}), 400
     if order_kind not in ("market", "limit", "stop_loss"):
@@ -436,16 +464,15 @@ def place_order():
 
     if order_kind in ("limit", "stop_loss"):
         if target_price is None:
-            return jsonify({
-                "status": "error",
-                "error": "target_price is required for limit/stop_loss orders",
-            }), 400
-        try:
-            target_price = float(target_price)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "error": "Invalid target price"}), 400
-        if not target_price > 0:
-            return jsonify({"status": "error", "error": "Target price must be positive"}), 400
+            return jsonify(
+                {
+                    "status": "error",
+                    "error": "target_price is required for limit/stop_loss orders",
+                }
+            ), 400
+        target_price, error = money.to_price(target_price)
+        if error:
+            return jsonify({"status": "error", "error": error}), 400
     else:
         target_price = None
 
@@ -460,18 +487,27 @@ def place_order():
     try:
         order_id = database.query_value(
             "SELECT place_order(%s, %s, %s, %s, %s, %s, %s)",
-            (current_user_id(), asset_id, order_type, quantity,
-             order_kind, target_price, expires_at),
+            (
+                current_user_id(),
+                asset_id,
+                order_type,
+                quantity,
+                order_kind,
+                target_price,
+                expires_at,
+            ),
         )
     except Exception as exc:
         response, status = user_facing_db_error(exc)
         return jsonify({"status": "error", "error": response.get_json()["error"]}), status
 
-    return jsonify({
-        "status": "success",
-        "message": f"Order #{order_id} placed successfully",
-        "order_id": order_id,
-    }), 200
+    return jsonify(
+        {
+            "status": "success",
+            "message": f"Order #{order_id} placed successfully",
+            "order_id": order_id,
+        }
+    ), 200
 
 
 @api.route("/transactions", methods=["GET"])
@@ -495,22 +531,26 @@ def get_transactions():
         """,
         (current_user_id(), limit, offset),
     )
-    return jsonify([
-        {
-            "id": r[0],
-            "symbol": r[1],
-            "type": r[2],
-            "quantity": float(r[3]),
-            "price": float(r[4]),
-            "total": float(r[5]),
-            "time": r[6].isoformat(),
-        } for r in rows
-    ])
+    return jsonify(
+        [
+            {
+                "id": r[0],
+                "symbol": r[1],
+                "type": r[2],
+                "quantity": money.money(r[3]),
+                "price": money.money(r[4]),
+                "total": money.money(r[5]),
+                "time": r[6].isoformat(),
+            }
+            for r in rows
+        ]
+    )
 
 
 # --------------------------------------------------------------------------
 # Market data
 # --------------------------------------------------------------------------
+
 
 @api.route("/prices", methods=["GET"])
 def get_latest_prices():
@@ -527,15 +567,18 @@ def get_latest_prices():
         ORDER BY a.symbol
         """
     )
-    return jsonify([
-        {
-            "symbol": r[0],
-            "name": r[1],
-            "price": float(r[2]),
-            "time": r[3].isoformat() if r[3] else None,
-            "asset_id": r[4],
-        } for r in prices
-    ])
+    return jsonify(
+        [
+            {
+                "symbol": r[0],
+                "name": r[1],
+                "price": money.money(r[2]),
+                "time": r[3].isoformat() if r[3] else None,
+                "asset_id": r[4],
+            }
+            for r in prices
+        ]
+    )
 
 
 @api.route("/analytics/ohlc/<int:asset_id>", methods=["GET"])
@@ -572,15 +615,18 @@ def get_ohlc_history(asset_id):
             (asset_id, days),
         )
 
-    return jsonify([
-        {
-            "time": r[0].isoformat(),
-            "open": float(r[1]),
-            "high": float(r[2]),
-            "low": float(r[3]),
-            "close": float(r[4]),
-        } for r in ohlc
-    ])
+    return jsonify(
+        [
+            {
+                "time": r[0].isoformat(),
+                "open": money.money(r[1]),
+                "high": money.money(r[2]),
+                "low": money.money(r[3]),
+                "close": money.money(r[4]),
+            }
+            for r in ohlc
+        ]
+    )
 
 
 @api.route("/analytics/price_history/<int:asset_id>", methods=["GET"])
@@ -607,7 +653,7 @@ def get_price_history(asset_id):
             (asset_id,),
         )
 
-    return jsonify([{"time": r[0].isoformat(), "price": float(r[1])} for r in history])
+    return jsonify([{"time": r[0].isoformat(), "price": money.money(r[1])} for r in history])
 
 
 @api.route("/analytics/recent_trades/<int:asset_id>", methods=["GET"])
@@ -622,14 +668,17 @@ def get_recent_market_trades(asset_id):
         """,
         (asset_id,),
     )
-    return jsonify([
-        {
-            "time": r[0].isoformat(),
-            "price": float(r[1]),
-            "quantity": float(r[2]),
-            "side": r[3],
-        } for r in rows
-    ])
+    return jsonify(
+        [
+            {
+                "time": r[0].isoformat(),
+                "price": money.money(r[1]),
+                "quantity": money.money(r[2]),
+                "side": r[3],
+            }
+            for r in rows
+        ]
+    )
 
 
 # Only the sort direction differs between the two sides of the book, and it
@@ -652,10 +701,12 @@ def get_market_orderbook(asset_id):
     bids = database.query_all(_DEPTH_SQL.format(direction="DESC"), (asset_id, "buy"))
     asks = database.query_all(_DEPTH_SQL.format(direction="ASC"), (asset_id, "sell"))
 
-    return jsonify({
-        "bids": [{"price": float(r[0]), "quantity": float(r[1])} for r in bids],
-        "asks": [{"price": float(r[0]), "quantity": float(r[1])} for r in asks],
-    })
+    return jsonify(
+        {
+            "bids": [{"price": money.money(r[0]), "quantity": money.money(r[1])} for r in bids],
+            "asks": [{"price": money.money(r[0]), "quantity": money.money(r[1])} for r in asks],
+        }
+    )
 
 
 @api.route("/analytics/yf_candles/<int:asset_id>", methods=["GET"])
@@ -667,9 +718,7 @@ def get_yfinance_candles(asset_id):
     if interval not in supported_intervals:
         return jsonify({"error": "Unsupported interval"}), 400
 
-    asset = database.query_one(
-        "SELECT symbol, type FROM assets WHERE asset_id = %s", (asset_id,)
-    )
+    asset = database.query_one("SELECT symbol, type FROM assets WHERE asset_id = %s", (asset_id,))
     if not asset:
         return jsonify({"error": "Asset not found"}), 404
 
@@ -712,17 +761,22 @@ def get_yfinance_candles(asset_id):
     for idx, row in hist.iterrows():
         dt = idx.to_pydatetime()
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         adj_close = row.get("Adj Close", row.get("Close", 0))
-        candles.append({
-            "time": dt.isoformat(),
-            "open": float(row.get("Open", 0) or 0),
-            "high": float(row.get("High", 0) or 0),
-            "low": float(row.get("Low", 0) or 0),
-            "close": float(row.get("Close", 0) or 0),
-            "adj_close": float(adj_close or 0),
-            "volume": float(row.get("Volume", 0) or 0),
-        })
+        candles.append(
+            {
+                "time": dt.isoformat(),
+                # yfinance hands back float64. money.money() routes it through
+                # str(), so the response carries the shortest round-tripping form
+                # rather than the full binary expansion of the float.
+                "open": money.money(row.get("Open", 0) or 0),
+                "high": money.money(row.get("High", 0) or 0),
+                "low": money.money(row.get("Low", 0) or 0),
+                "close": money.money(row.get("Close", 0) or 0),
+                "adj_close": money.money(adj_close or 0),
+                "volume": money.money(row.get("Volume", 0) or 0),
+            }
+        )
 
     return jsonify({"meta": meta, "candles": candles})
 
@@ -731,23 +785,32 @@ def get_yfinance_candles(asset_id):
 # Analytics
 # --------------------------------------------------------------------------
 
+
 @api.route("/analytics/pnl_summary", methods=["GET"])
 @login_required
 def get_pnl_summary():
     user_id = current_user_id()
-    realized = float(database.query_value(
-        "SELECT COALESCE(SUM(realized_profit), 0) FROM realized_pnl WHERE user_id = %s",
-        (user_id,), default=0,
-    ))
-    unrealized = float(database.query_value(
-        "SELECT COALESCE(SUM(unrealized_pl), 0) FROM portfolio_summary WHERE user_id = %s",
-        (user_id,), default=0,
-    ))
-    return jsonify({
-        "realized_pnl": realized,
-        "unrealized_pnl": unrealized,
-        "total_pnl": realized + unrealized,
-    })
+    realized = money.money(
+        database.query_value(
+            "SELECT COALESCE(SUM(realized_profit), 0) FROM realized_pnl WHERE user_id = %s",
+            (user_id,),
+            default=0,
+        )
+    )
+    unrealized = money.money(
+        database.query_value(
+            "SELECT COALESCE(SUM(unrealized_pl), 0) FROM portfolio_summary WHERE user_id = %s",
+            (user_id,),
+            default=0,
+        )
+    )
+    return jsonify(
+        {
+            "realized_pnl": realized,
+            "unrealized_pnl": unrealized,
+            "total_pnl": realized + unrealized,
+        }
+    )
 
 
 @api.route("/analytics/leaderboard", methods=["GET"])
@@ -777,14 +840,17 @@ def get_leaderboard():
         LIMIT 10
         """
     )
-    return jsonify([
-        {
-            "username": r[0],
-            "total_pl": float(r[1]),
-            "realized_pl": float(r[2]),
-            "unrealized_pl": float(r[3]),
-        } for r in rows
-    ])
+    return jsonify(
+        [
+            {
+                "username": r[0],
+                "total_pl": money.money(r[1]),
+                "realized_pl": money.money(r[2]),
+                "unrealized_pl": money.money(r[3]),
+            }
+            for r in rows
+        ]
+    )
 
 
 @api.route("/analytics/asset_stats", methods=["GET"])
@@ -801,9 +867,7 @@ def get_asset_stats():
         LIMIT 10
         """
     )
-    return jsonify([
-        {"symbol": r[0], "count": r[1], "volume": float(r[2])} for r in rows
-    ])
+    return jsonify([{"symbol": r[0], "count": r[1], "volume": money.money(r[2])} for r in rows])
 
 
 @api.route("/analytics/indicators/<int:asset_id>", methods=["GET"])
@@ -840,19 +904,25 @@ def get_indicators(asset_id):
         (asset_id,),
     )
     rows = list(rows)[::-1]  # chronological order for charting
-    return jsonify([
-        {
-            "time": r[0].isoformat(),
-            "price": float(r[1]),
-            "sma_7": float(r[2]) if r[2] is not None else None,
-            "volatility": float(r[3]) if r[3] is not None else None,
-        } for r in rows
-    ])
+    return jsonify(
+        [
+            {
+                "time": r[0].isoformat(),
+                "price": money.money(r[1]),
+                # Null until the window has enough rows behind it; kept as null
+                # rather than coerced to zero, which would plot as a real value.
+                "sma_7": money.money(r[2]) if r[2] is not None else None,
+                "volatility": money.money(r[3]) if r[3] is not None else None,
+            }
+            for r in rows
+        ]
+    )
 
 
 # --------------------------------------------------------------------------
 # Background jobs
 # --------------------------------------------------------------------------
+
 
 def process_pending_limit_orders():
     try:
@@ -875,10 +945,16 @@ def expire_old_orders():
 def start_scheduler():
     if scheduler.running:
         return
-    scheduler.add_job(process_pending_limit_orders, "interval", seconds=30,
-                      id="process_limits", replace_existing=True)
-    scheduler.add_job(expire_old_orders, "interval", minutes=5,
-                      id="expire_orders", replace_existing=True)
+    scheduler.add_job(
+        process_pending_limit_orders,
+        "interval",
+        seconds=30,
+        id="process_limits",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        expire_old_orders, "interval", minutes=5, id="expire_orders", replace_existing=True
+    )
     scheduler.start()
     logger.info("Background scheduler started")
 
@@ -886,6 +962,7 @@ def start_scheduler():
 # --------------------------------------------------------------------------
 # Application factory
 # --------------------------------------------------------------------------
+
 
 def create_app(**overrides):
     app = Flask(
@@ -898,12 +975,28 @@ def create_app(**overrides):
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SECURE=config.SESSION_COOKIE_SECURE,
         SESSION_COOKIE_SAMESITE=config.SESSION_COOKIE_SAMESITE,
-        PERMANENT_SESSION_LIFETIME=timedelta(
-            minutes=config.PERMANENT_SESSION_LIFETIME_MINUTES
-        ),
+        PERMANENT_SESSION_LIFETIME=timedelta(minutes=config.PERMANENT_SESSION_LIFETIME_MINUTES),
         WTF_CSRF_TIME_LIMIT=None,
     )
     app.config.update(overrides)
+
+    # Serialises Decimal as a JSON string. Without this every money value
+    # would need a float() cast to be encodable, which is exactly the
+    # precision loss the schema's NUMERIC columns exist to prevent.
+    app.json = money.DecimalJSONProvider(app)
+
+    # Without a proxy in front, X-Forwarded-For is attacker-controlled and
+    # trusting it would hand every client a fresh rate-limit bucket per
+    # request. See config.TRUST_PROXY_HEADERS.
+    if config.TRUST_PROXY_HEADERS:
+        # Wrapping wsgi_app is the documented Flask idiom for installing
+        # WSGI middleware; mypy reads it as assigning over a method.
+        app.wsgi_app = ProxyFix(  # type: ignore[method-assign]
+            app.wsgi_app, x_for=config.PROXY_HOP_COUNT, x_proto=config.PROXY_HOP_COUNT
+        )
+
+    app.config.setdefault("RATELIMIT_ENABLED", config.RATELIMIT_ENABLED)
+    limiter.init_app(app)
 
     csrf.init_app(app)
 
@@ -920,6 +1013,27 @@ def create_app(**overrides):
     def handle_csrf_error(exc):
         logger.warning("CSRF validation failed: %s", exc.description)
         return jsonify({"error": "Session expired. Please refresh and try again."}), 400
+
+    @app.errorhandler(429)
+    def handle_rate_limited(exc):
+        # Logged at warning: a burst of these is the signal that someone is
+        # working through a credential list.
+        logger.warning(
+            "Rate limit exceeded: %s %s from %s",
+            request.method,
+            request.path,
+            get_remote_address(),
+        )
+        retry_after = getattr(exc, "retry_after", None)
+        response = jsonify(
+            {
+                "error": "Too many requests. Please wait and try again.",
+            }
+        )
+        response.status_code = 429
+        if retry_after:
+            response.headers["Retry-After"] = str(retry_after)
+        return response
 
     @app.errorhandler(404)
     def handle_not_found(_):

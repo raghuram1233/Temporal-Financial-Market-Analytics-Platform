@@ -9,6 +9,9 @@ psycopg2-binary==2.9.9
 
 # Security
 bcrypt==4.1.3
+# Rate limiting. Keeps counters in-process by default; point
+# RATELIMIT_STORAGE_URI at Redis to share them across workers.
+Flask-Limiter==3.8.0
 
 # Configuration
 python-dotenv==1.0.1

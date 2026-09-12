@@ -8,6 +8,7 @@ well-known credential that ships in the source tree.
 
 import os
 import secrets
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -101,6 +102,33 @@ PERMANENT_SESSION_LIFETIME_MINUTES = _integer("SESSION_LIFETIME_MINUTES", 720)
 # client needs access. Listing an origin here also enables credentialed CORS,
 # so it must never be widened to "*" while session cookies are in use.
 CORS_ORIGINS = _csv("CORS_ORIGINS")
+
+# --- Rate limiting --------------------------------------------------------
+RATELIMIT_ENABLED = _flag("RATELIMIT_ENABLED", True)
+
+# "memory://" keeps counters in the process that saw the request. Each
+# gunicorn worker is a separate process, so with N workers a client gets N
+# times the configured allowance before being refused. That is acceptable for
+# a single-node deployment and wrong for anything behind a load balancer:
+# point this at Redis ("redis://host:6379/0") to share one counter.
+RATELIMIT_STORAGE_URI = _text("RATELIMIT_STORAGE_URI", "memory://")
+
+# Credential stuffing is a slow, distributed guessing attack, so the hourly
+# ceiling matters more than the per-minute one.
+RATELIMIT_LOGIN = _text("RATELIMIT_LOGIN", "10 per minute;60 per hour")
+RATELIMIT_REGISTER = _text("RATELIMIT_REGISTER", "5 per hour")
+RATELIMIT_DEFAULT = _text("RATELIMIT_DEFAULT", "600 per hour")
+
+# Rate limits key on the client IP. Behind a reverse proxy every request
+# appears to come from the proxy, so the limit would apply to all users at
+# once; ProxyFix reads the real address out of X-Forwarded-For instead.
+#
+# It stays OFF by default because those headers are trivially forged when
+# nothing strips them: enabling this without a proxy in front lets any client
+# invent an address per request and bypass the limiter entirely. Turn it on
+# only when a trusted proxy is actually terminating the connection.
+TRUST_PROXY_HEADERS = _flag("TRUST_PROXY_HEADERS", False)
+PROXY_HOP_COUNT = _integer("PROXY_HOP_COUNT", 1)
 
 # --- Behaviour ------------------------------------------------------------
 AUTO_INIT_DB = _flag("AUTO_INIT_DB", False)

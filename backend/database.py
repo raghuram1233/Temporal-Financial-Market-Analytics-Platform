@@ -11,7 +11,6 @@ import os
 import threading
 from contextlib import contextmanager
 
-import psycopg2
 from psycopg2 import pool as pg_pool
 
 from . import config
@@ -43,8 +42,11 @@ def get_pool():
                 _pool = _build_pool()
                 logger.info(
                     "Connection pool ready (%s:%s/%s, %s-%s connections)",
-                    config.DB_HOST, config.DB_PORT, config.DB_NAME,
-                    config.DB_POOL_MIN, config.DB_POOL_MAX,
+                    config.DB_HOST,
+                    config.DB_PORT,
+                    config.DB_NAME,
+                    config.DB_POOL_MIN,
+                    config.DB_POOL_MAX,
                 )
     return _pool
 
@@ -126,7 +128,7 @@ def init_db(schema_path=None):
     """Apply schema.sql. Destructive: the script drops existing tables."""
     if schema_path is None:
         schema_path = os.path.join(os.path.dirname(__file__), "..", "schema.sql")
-    with open(schema_path, "r", encoding="utf-8") as handle:
+    with open(schema_path, encoding="utf-8") as handle:
         schema_sql = handle.read()
 
     with transaction() as cur:

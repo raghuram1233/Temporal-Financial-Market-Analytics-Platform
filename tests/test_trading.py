@@ -6,7 +6,8 @@ previously could not execute.
 """
 
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import psycopg2
 import pytest
@@ -17,8 +18,7 @@ STARTING_BALANCE = 100000.00
 
 
 def balance_of(db, user_id):
-    return float(db.query_value(
-        "SELECT balance FROM wallets WHERE user_id = %s", (user_id,)))
+    return float(db.query_value("SELECT balance FROM wallets WHERE user_id = %s", (user_id,)))
 
 
 def place(db, user_id, asset_id, side, qty, kind="market", target=None, expires=None):
@@ -36,14 +36,14 @@ class TestWalletTrigger:
 
     def test_buy_debits_the_wallet(self, clean_db, make_user, asset_id):
         user = make_user()
-        place(clean_db, user, asset_id, "buy", 10)      # 10 @ 100
+        place(clean_db, user, asset_id, "buy", 10)  # 10 @ 100
         assert balance_of(clean_db, user) == STARTING_BALANCE - 1000
 
     def test_sell_credits_the_wallet(self, clean_db, make_user, asset_id, set_price):
         user = make_user()
-        place(clean_db, user, asset_id, "buy", 10)      # -1000
+        place(clean_db, user, asset_id, "buy", 10)  # -1000
         set_price(asset_id, 150)
-        place(clean_db, user, asset_id, "sell", 10)     # +1500
+        place(clean_db, user, asset_id, "sell", 10)  # +1500
         assert balance_of(clean_db, user) == STARTING_BALANCE + 500
 
     def test_balance_changes_are_audited(self, clean_db, make_user, asset_id):
@@ -64,25 +64,20 @@ class TestOrderValidation:
     def test_buy_beyond_balance_is_rejected(self, clean_db, make_user, asset_id):
         user = make_user(balance=500)
         with pytest.raises(psycopg2.Error, match="Insufficient balance"):
-            place(clean_db, user, asset_id, "buy", 10)   # needs 1000
+            place(clean_db, user, asset_id, "buy", 10)  # needs 1000
 
-    def test_rejected_buy_leaves_the_balance_untouched(
-        self, clean_db, make_user, asset_id
-    ):
+    def test_rejected_buy_leaves_the_balance_untouched(self, clean_db, make_user, asset_id):
         user = make_user(balance=500)
         with pytest.raises(psycopg2.Error):
             place(clean_db, user, asset_id, "buy", 10)
         assert balance_of(clean_db, user) == 500
 
-    def test_rejected_order_is_rolled_back_entirely(
-        self, clean_db, make_user, asset_id
-    ):
+    def test_rejected_order_is_rolled_back_entirely(self, clean_db, make_user, asset_id):
         """The failed order row must not survive: it never executed."""
         user = make_user(balance=500)
         with pytest.raises(psycopg2.Error):
             place(clean_db, user, asset_id, "buy", 10)
-        assert clean_db.query_value(
-            "SELECT count(*) FROM orders WHERE user_id = %s", (user,)) == 0
+        assert clean_db.query_value("SELECT count(*) FROM orders WHERE user_id = %s", (user,)) == 0
 
     def test_selling_without_holdings_is_rejected(self, clean_db, make_user, asset_id):
         user = make_user()
@@ -112,16 +107,14 @@ class TestOrderValidation:
 
 
 class TestConcurrency:
-    def test_two_simultaneous_buys_cannot_overdraw(
-        self, clean_db, make_user, asset_id
-    ):
+    def test_two_simultaneous_buys_cannot_overdraw(self, clean_db, make_user, asset_id):
         """Both threads see enough money before either commits.
 
         execute_trade takes SELECT ... FOR UPDATE on the wallet row, so the
         second transaction blocks and then re-reads the debited balance.
         Exactly one buy must succeed.
         """
-        user = make_user(balance=1500)      # enough for one 1000 buy, not two
+        user = make_user(balance=1500)  # enough for one 1000 buy, not two
         results = []
         barrier = threading.Barrier(2)
 
@@ -141,8 +134,7 @@ class TestConcurrency:
 
         assert sorted(results) == ["ok", "rejected"]
         assert balance_of(clean_db, user) == 500
-        assert clean_db.query_value(
-            "SELECT count(*) FROM trades WHERE user_id = %s", (user,)) == 1
+        assert clean_db.query_value("SELECT count(*) FROM trades WHERE user_id = %s", (user,)) == 1
 
 
 class TestLimitOrders:
@@ -152,12 +144,11 @@ class TestLimitOrders:
 
         filled = clean_db.query_value("SELECT process_limit_orders(%s)", (asset_id,))
         assert filled == 0
-        assert clean_db.query_value(
-            "SELECT status FROM orders WHERE user_id = %s", (user,)) == "open"
+        assert (
+            clean_db.query_value("SELECT status FROM orders WHERE user_id = %s", (user,)) == "open"
+        )
 
-    def test_limit_buy_fills_when_price_drops(
-        self, clean_db, make_user, asset_id, set_price
-    ):
+    def test_limit_buy_fills_when_price_drops(self, clean_db, make_user, asset_id, set_price):
         user = make_user()
         place(clean_db, user, asset_id, "buy", 5, kind="limit", target=90)
 
@@ -165,15 +156,17 @@ class TestLimitOrders:
         filled = clean_db.query_value("SELECT process_limit_orders(%s)", (asset_id,))
 
         assert filled == 1
-        assert clean_db.query_value(
-            "SELECT status FROM orders WHERE user_id = %s", (user,)) == "filled"
+        assert (
+            clean_db.query_value("SELECT status FROM orders WHERE user_id = %s", (user,))
+            == "filled"
+        )
         # Fills at the market price, not at the target.
-        assert float(clean_db.query_value(
-            "SELECT price FROM trades WHERE user_id = %s", (user,))) == 85.0
+        assert (
+            float(clean_db.query_value("SELECT price FROM trades WHERE user_id = %s", (user,)))
+            == 85.0
+        )
 
-    def test_limit_sell_fills_when_price_rises(
-        self, clean_db, make_user, asset_id, set_price
-    ):
+    def test_limit_sell_fills_when_price_rises(self, clean_db, make_user, asset_id, set_price):
         user = make_user()
         place(clean_db, user, asset_id, "buy", 10)
         place(clean_db, user, asset_id, "sell", 5, kind="limit", target=110)
@@ -183,9 +176,7 @@ class TestLimitOrders:
         set_price(asset_id, 115)
         assert clean_db.query_value("SELECT process_limit_orders(%s)", (asset_id,)) == 1
 
-    def test_stop_loss_sell_fires_when_price_falls(
-        self, clean_db, make_user, asset_id, set_price
-    ):
+    def test_stop_loss_sell_fires_when_price_falls(self, clean_db, make_user, asset_id, set_price):
         """A stop-loss triggers in the opposite direction to a limit order."""
         user = make_user()
         place(clean_db, user, asset_id, "buy", 10)
@@ -200,29 +191,32 @@ class TestLimitOrders:
 class TestOrderExpiry:
     def test_past_expiry_cancels_the_order(self, clean_db, make_user, asset_id):
         user = make_user()
-        past = datetime.now(timezone.utc) - timedelta(minutes=1)
+        past = datetime.now(UTC) - timedelta(minutes=1)
         place(clean_db, user, asset_id, "buy", 5, kind="limit", target=90, expires=past)
 
         cancelled = clean_db.query_value("SELECT expire_stale_orders()")
         assert cancelled == 1
-        assert clean_db.query_value(
-            "SELECT status FROM orders WHERE user_id = %s", (user,)) == "cancelled"
+        assert (
+            clean_db.query_value("SELECT status FROM orders WHERE user_id = %s", (user,))
+            == "cancelled"
+        )
 
     def test_future_expiry_is_left_alone(self, clean_db, make_user, asset_id):
         user = make_user()
-        future = datetime.now(timezone.utc) + timedelta(days=1)
+        future = datetime.now(UTC) + timedelta(days=1)
         place(clean_db, user, asset_id, "buy", 5, kind="limit", target=90, expires=future)
 
         assert clean_db.query_value("SELECT expire_stale_orders()") == 0
-        assert clean_db.query_value(
-            "SELECT status FROM orders WHERE user_id = %s", (user,)) == "open"
+        assert (
+            clean_db.query_value("SELECT status FROM orders WHERE user_id = %s", (user,)) == "open"
+        )
 
     def test_expired_orders_do_not_fill(self, clean_db, make_user, asset_id, set_price):
         user = make_user()
-        past = datetime.now(timezone.utc) - timedelta(minutes=1)
+        past = datetime.now(UTC) - timedelta(minutes=1)
         place(clean_db, user, asset_id, "buy", 5, kind="limit", target=90, expires=past)
 
-        set_price(asset_id, 85)   # would otherwise trigger the order
+        set_price(asset_id, 85)  # would otherwise trigger the order
         assert clean_db.query_value("SELECT process_limit_orders(%s)", (asset_id,)) == 0
 
 
@@ -252,21 +246,21 @@ class TestAnalyticsEndpoints:
         assert clean_db.query_value("SELECT count(*) FROM trades") == before
 
     def test_leaderboard_includes_realized_pnl(
-        self, clean_db, client, make_user, asset_id, set_price
+        self, clean_db, client, make_user, asset_id, set_price, money_field
     ):
         """The old query summed only unrealized P&L and dropped realized."""
         user = make_user()
         place(clean_db, user, asset_id, "buy", 10)
         set_price(asset_id, 130)
-        place(clean_db, user, asset_id, "sell", 10)   # realizes +300, no holding left
+        place(clean_db, user, asset_id, "sell", 10)  # realizes +300, no holding left
 
         resp = client.get("/api/analytics/leaderboard")
         assert resp.status_code == 200
-        row = next(r for r in resp.get_json() if r["realized_pl"] != 0)
-        assert row["realized_pl"] == pytest.approx(300.0)
-        assert row["total_pl"] == pytest.approx(300.0)
+        row = next(r for r in resp.get_json() if money_field(r["realized_pl"]) != Decimal("0"))
+        assert money_field(row["realized_pl"]) == Decimal("300")
+        assert money_field(row["total_pl"]) == Decimal("300")
 
-    def test_orderbook_endpoint(self, clean_db, client, asset_id, make_user):
+    def test_orderbook_endpoint(self, clean_db, client, asset_id, make_user, money_field):
         user = make_user()
         place(clean_db, user, asset_id, "buy", 10)
 
@@ -274,4 +268,4 @@ class TestAnalyticsEndpoints:
         assert resp.status_code == 200
         body = resp.get_json()
         assert "bids" in body and "asks" in body
-        assert body["bids"][0]["price"] == pytest.approx(100.0)
+        assert money_field(body["bids"][0]["price"]) == Decimal("100.00")

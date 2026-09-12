@@ -34,10 +34,16 @@ def main():
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
-    scheduler.add_job(process_pending_limit_orders, "interval", seconds=30,
-                      id="process_limits", replace_existing=True)
-    scheduler.add_job(expire_old_orders, "interval", minutes=5,
-                      id="expire_orders", replace_existing=True)
+    scheduler.add_job(
+        process_pending_limit_orders,
+        "interval",
+        seconds=30,
+        id="process_limits",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        expire_old_orders, "interval", minutes=5, id="expire_orders", replace_existing=True
+    )
     scheduler.start()
     logger.info("Worker started: limit matching every 30s, expiry every 5m")
 

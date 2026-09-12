@@ -25,12 +25,13 @@ import platform
 import random
 import statistics
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extensions import (
-    ISOLATION_LEVEL_AUTOCOMMIT, ISOLATION_LEVEL_READ_COMMITTED,
+    ISOLATION_LEVEL_AUTOCOMMIT,
+    ISOLATION_LEVEL_READ_COMMITTED,
 )
 
 from backend import config
@@ -51,10 +52,14 @@ HISTORY_DAYS = 730
 # Infrastructure
 # --------------------------------------------------------------------------
 
+
 def admin_connection(dbname="postgres"):
     conn = psycopg2.connect(
-        host=config.DB_HOST, port=config.DB_PORT, user=config.DB_USER,
-        password=config.DB_PASS, dbname=dbname,
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        user=config.DB_USER,
+        password=config.DB_PASS,
+        dbname=dbname,
     )
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     return conn
@@ -64,8 +69,9 @@ def create_bench_database():
     print(f"Creating {BENCH_DB} from schema.sql ...")
     conn = admin_connection()
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-            sql.Identifier(BENCH_DB)))
+        cur.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(BENCH_DB))
+        )
         cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(BENCH_DB)))
     conn.close()
 
@@ -78,8 +84,9 @@ def create_bench_database():
 def drop_bench_database():
     conn = admin_connection()
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-            sql.Identifier(BENCH_DB)))
+        cur.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(BENCH_DB))
+        )
     conn.close()
 
 
@@ -121,6 +128,7 @@ def human_bytes(n):
 # 1. Ingest
 # --------------------------------------------------------------------------
 
+
 def load_market_data(conn, total_rows):
     """Bulk-load synthetic ticks with COPY. Returns (rows, seconds)."""
     with conn.cursor() as cur:
@@ -130,7 +138,7 @@ def load_market_data(conn, total_rows):
     rows_per_asset = total_rows // len(assets)
     span = timedelta(days=HISTORY_DAYS)
     step = span / rows_per_asset
-    start_time = datetime.now(timezone.utc) - span
+    start_time = datetime.now(UTC) - span
 
     # The per-row price-cache trigger would fire millions of times during a
     # bulk load, dominating the measurement and saying nothing about the
@@ -143,8 +151,10 @@ def load_market_data(conn, total_rows):
         cur.execute("DROP TRIGGER IF EXISTS trg_update_latest_price_cache ON market_data")
     conn.commit()
 
-    print(f"Loading {total_rows:,} rows across {len(assets)} assets "
-          f"({rows_per_asset:,} each over {HISTORY_DAYS} days) ...")
+    print(
+        f"Loading {total_rows:,} rows across {len(assets)} assets "
+        f"({rows_per_asset:,} each over {HISTORY_DAYS} days) ..."
+    )
 
     written = 0
     elapsed = 0.0
@@ -165,8 +175,7 @@ def load_market_data(conn, total_rows):
             start = time.perf_counter()
             with conn.cursor() as cur:
                 cur.copy_expert(
-                    "COPY market_data (asset_id, price, time, source) "
-                    "FROM STDIN WITH (FORMAT csv)",
+                    "COPY market_data (asset_id, price, time, source) FROM STDIN WITH (FORMAT csv)",
                     buf,
                 )
             conn.commit()
@@ -175,8 +184,7 @@ def load_market_data(conn, total_rows):
 
         print(f"  loaded {written:>12,} rows", end="\r")
 
-    print(f"  loaded {written:,} rows in {elapsed:,.1f}s"
-          f" ({written / elapsed:,.0f} rows/sec)      ")
+    print(f"  loaded {written:,} rows in {elapsed:,.1f}s ({written / elapsed:,.0f} rows/sec)      ")
 
     with conn.cursor() as cur:
         cur.execute(
@@ -203,6 +211,7 @@ def load_market_data(conn, total_rows):
 # --------------------------------------------------------------------------
 # 2. Storage and compression
 # --------------------------------------------------------------------------
+
 
 def hypertable_bytes(cur, name="market_data"):
     cur.execute("SELECT total_bytes FROM hypertable_detailed_size(%s)", (name,))
@@ -286,10 +295,8 @@ def run_query_benchmarks(conn, asset_id):
         results["latest_scan"] = timed(cur, Q_LATEST_SCAN, runs=5, warmup=1)
 
         for days in (30, 365):
-            results[f"ohlc_cagg_{days}"] = timed(
-                cur, Q_OHLC_CAGG, (asset_id, days), runs=20)
-            results[f"ohlc_raw_{days}"] = timed(
-                cur, Q_OHLC_RAW, (asset_id, days), runs=5, warmup=1)
+            results[f"ohlc_cagg_{days}"] = timed(cur, Q_OHLC_CAGG, (asset_id, days), runs=20)
+            results[f"ohlc_raw_{days}"] = timed(cur, Q_OHLC_RAW, (asset_id, days), runs=5, warmup=1)
 
         results["range_30d"] = timed(cur, Q_RANGE_SCAN, (asset_id, 30), runs=10)
         results["range_365d"] = timed(cur, Q_RANGE_SCAN, (asset_id, 365), runs=5, warmup=1)
@@ -306,6 +313,7 @@ def explain(conn, query, params):
 # --------------------------------------------------------------------------
 # Report
 # --------------------------------------------------------------------------
+
 
 def speedup(baseline_ms, candidate_ms):
     if not candidate_ms:
@@ -426,17 +434,17 @@ def write_report(env, ingest, storage, before_q, after_q, plans):
         "|---|---:|---:|---:|",
     ]
 
-    for key, label in [("range_30d", "30-day aggregate scan"),
-                       ("range_365d", "365-day aggregate scan"),
-                       ("indicators", "SMA-7 + volatility window")]:
+    for key, label in [
+        ("range_30d", "30-day aggregate scan"),
+        ("range_365d", "365-day aggregate scan"),
+        ("indicators", "SMA-7 + volatility window"),
+    ]:
         b, a = before_q[key]["p50"], after_q[key]["p50"]
         direction = "faster" if a < b else "slower"
         factor = (b / a) if a else 0
         if factor < 1 and factor:
             factor = 1 / factor
-        lines.append(
-            f"| {label} | {b:,.2f} | {a:,.2f} | {factor:,.2f}x {direction} |"
-        )
+        lines.append(f"| {label} | {b:,.2f} | {a:,.2f} | {factor:,.2f}x {direction} |")
 
     lines += [
         "",
@@ -479,12 +487,18 @@ def write_report(env, ingest, storage, before_q, after_q, plans):
 
 # --------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--rows", type=int, default=5_000_000,
-                        help="market_data rows to generate (default: 5,000,000)")
-    parser.add_argument("--keep", action="store_true",
-                        help="keep the benchmark database afterwards")
+    parser.add_argument(
+        "--rows",
+        type=int,
+        default=5_000_000,
+        help="market_data rows to generate (default: 5,000,000)",
+    )
+    parser.add_argument(
+        "--keep", action="store_true", help="keep the benchmark database afterwards"
+    )
     parser.add_argument("--seed", type=int, default=7, help="RNG seed")
     args = parser.parse_args()
 
@@ -493,8 +507,11 @@ def main():
 
     create_bench_database()
     conn = psycopg2.connect(
-        host=config.DB_HOST, port=config.DB_PORT, user=config.DB_USER,
-        password=config.DB_PASS, dbname=BENCH_DB,
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        user=config.DB_USER,
+        password=config.DB_PASS,
+        dbname=BENCH_DB,
     )
 
     try:
@@ -526,7 +543,8 @@ def main():
             size_before = hypertable_bytes(cur)
             cur.execute(
                 "SELECT count(*) FROM timescaledb_information.chunks "
-                "WHERE hypertable_name = 'market_data'")
+                "WHERE hypertable_name = 'market_data'"
+            )
             chunk_total = cur.fetchone()[0]
 
         print("Measuring queries (uncompressed) ...")
@@ -539,17 +557,14 @@ def main():
         conn.commit()
         with conn.cursor() as cur:
             size_after = hypertable_bytes(cur)
-        print(f"  compressed {chunks_compressed}/{chunk_total} chunks "
-              f"in {compress_seconds:,.1f}s")
+        print(f"  compressed {chunks_compressed}/{chunk_total} chunks in {compress_seconds:,.1f}s")
 
         print("Measuring queries (compressed) ...")
         after_q = run_query_benchmarks(conn, first_asset)
 
         plans = {
-            "OHLC via continuous aggregate":
-                explain(conn, Q_OHLC_CAGG, (first_asset, 30)),
-            "OHLC via raw time_bucket":
-                explain(conn, Q_OHLC_RAW, (first_asset, 30)),
+            "OHLC via continuous aggregate": explain(conn, Q_OHLC_CAGG, (first_asset, 30)),
+            "OHLC via raw time_bucket": explain(conn, Q_OHLC_RAW, (first_asset, 30)),
         }
 
         env = {
@@ -558,28 +573,38 @@ def main():
             "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
             "cpus": cpus,
             "assets": asset_count,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "timestamp": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         }
 
         ratio = write_report(
             env,
             (rows, load_seconds),
             (size_before, size_after, chunk_total, chunks_compressed, compress_seconds),
-            before_q, after_q, plans,
+            before_q,
+            after_q,
+            plans,
         )
 
         print("\n" + "=" * 66)
         print("HEADLINE NUMBERS")
         print("=" * 66)
         print(f"  Ingest        {rows / load_seconds:>12,.0f} rows/sec")
-        print(f"  Compression   {ratio:>12,.1f}x   "
-              f"{human_bytes(size_before)} -> {human_bytes(size_after)}")
-        print(f"  Latest price  {speedup(after_q['latest_scan']['p50'], after_q['latest_cache']['p50']):>12}   "
-              f"faster via cache table")
-        print(f"  OHLC 30d      {speedup(after_q['ohlc_raw_30']['p50'], after_q['ohlc_cagg_30']['p50']):>12}   "
-              f"faster via continuous aggregate")
-        print(f"  OHLC 365d     {speedup(after_q['ohlc_raw_365']['p50'], after_q['ohlc_cagg_365']['p50']):>12}   "
-              f"faster via continuous aggregate")
+        print(
+            f"  Compression   {ratio:>12,.1f}x   "
+            f"{human_bytes(size_before)} -> {human_bytes(size_after)}"
+        )
+        print(
+            f"  Latest price  {speedup(after_q['latest_scan']['p50'], after_q['latest_cache']['p50']):>12}   "
+            f"faster via cache table"
+        )
+        print(
+            f"  OHLC 30d      {speedup(after_q['ohlc_raw_30']['p50'], after_q['ohlc_cagg_30']['p50']):>12}   "
+            f"faster via continuous aggregate"
+        )
+        print(
+            f"  OHLC 365d     {speedup(after_q['ohlc_raw_365']['p50'], after_q['ohlc_cagg_365']['p50']):>12}   "
+            f"faster via continuous aggregate"
+        )
         print("=" * 66)
         print(f"Total run time: {time.perf_counter() - overall:,.1f}s")
 

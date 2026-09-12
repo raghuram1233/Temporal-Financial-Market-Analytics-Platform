@@ -16,7 +16,7 @@ told apart from ingested prices at any time.
 import argparse
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from psycopg2.extras import execute_values
 
@@ -27,12 +27,31 @@ logger = logging.getLogger("seed_demo")
 # Rough starting points so the generated series look sane per asset class.
 # These are round numbers, not quotes.
 BASE_PRICES = {
-    "BTC": 62000, "ETH": 3400, "SOL": 145, "ADA": 0.45, "XRP": 0.52,
-    "DOGE": 0.12, "DOT": 6.20, "LINK": 14.50, "MATIC": 0.58, "AVAX": 27.00,
-    "LTC": 72.00, "SHIB": 0.000018,
-    "AAPL": 210, "TSLA": 178, "NVDA": 118, "MSFT": 420, "AMZN": 185,
-    "GOOGL": 175, "META": 495, "NFLX": 640, "DIS": 92, "ADBE": 520,
-    "INTC": 31, "AMD": 158, "CRM": 245,
+    "BTC": 62000,
+    "ETH": 3400,
+    "SOL": 145,
+    "ADA": 0.45,
+    "XRP": 0.52,
+    "DOGE": 0.12,
+    "DOT": 6.20,
+    "LINK": 14.50,
+    "MATIC": 0.58,
+    "AVAX": 27.00,
+    "LTC": 72.00,
+    "SHIB": 0.000018,
+    "AAPL": 210,
+    "TSLA": 178,
+    "NVDA": 118,
+    "MSFT": 420,
+    "AMZN": 185,
+    "GOOGL": 175,
+    "META": 495,
+    "NFLX": 640,
+    "DIS": 92,
+    "ADBE": 520,
+    "INTC": 31,
+    "AMD": 158,
+    "CRM": 245,
 }
 DEFAULT_BASE = 100.0
 
@@ -49,7 +68,7 @@ def generate_series(base_price, days, volatility, ticks):
     Walking backwards keeps the most recent price anchored near `base_price`,
     which matters because that is the price orders will execute at.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     points = []
 
     price = base_price
@@ -74,8 +93,7 @@ def generate_series(base_price, days, volatility, ticks):
 
 
 def seed(days, reset):
-    assets = database.query_all(
-        "SELECT asset_id, symbol, type FROM assets ORDER BY asset_id")
+    assets = database.query_all("SELECT asset_id, symbol, type FROM assets ORDER BY asset_id")
     if not assets:
         raise SystemExit("No assets found. Apply schema.sql first.")
 
@@ -91,8 +109,7 @@ def seed(days, reset):
         volatility = DAILY_VOLATILITY.get(asset_type, 0.02)
         series = generate_series(base, days, volatility, INTRADAY_TICKS)
 
-        rows = [(asset_id, round(price, 8), stamp, "seed_demo")
-                for stamp, price in series]
+        rows = [(asset_id, round(price, 8), stamp, "seed_demo") for stamp, price in series]
 
         # One round trip per asset. Inserting these one at a time would mean
         # tens of thousands of separate statements.
@@ -118,9 +135,7 @@ def refresh_aggregate():
         try:
             conn.autocommit = True
             with conn.cursor() as cur:
-                cur.execute(
-                    "CALL refresh_continuous_aggregate('market_data_daily', NULL, NULL)"
-                )
+                cur.execute("CALL refresh_continuous_aggregate('market_data_daily', NULL, NULL)")
         finally:
             conn.autocommit = False
             database.release_db_connection(conn)
@@ -131,12 +146,11 @@ def refresh_aggregate():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--days", type=int, default=90,
-                        help="days of daily history to generate (default: 90)")
-    parser.add_argument("--reset", action="store_true",
-                        help="delete existing market data first")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="RNG seed, for reproducible output")
+    parser.add_argument(
+        "--days", type=int, default=90, help="days of daily history to generate (default: 90)"
+    )
+    parser.add_argument("--reset", action="store_true", help="delete existing market data first")
+    parser.add_argument("--seed", type=int, default=None, help="RNG seed, for reproducible output")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")

@@ -1,5 +1,14 @@
 # Temporal Financial Market Analytics Platform
 
+[![CI](https://github.com/raghuram1233/Temporal-Financial-Market-Analytics-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/raghuram1233/Temporal-Financial-Market-Analytics-Platform/actions/workflows/ci.yml)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
+[![PostgreSQL 16 + TimescaleDB 2.15](https://img.shields.io/badge/postgres-16%20%2B%20TimescaleDB%202.15-336791)](https://www.timescale.com/)
+[![Ruff](https://img.shields.io/badge/lint-ruff-261230)](https://docs.astral.sh/ruff/)
+[![Checked with mypy](https://img.shields.io/badge/types-mypy-2a6db2)](https://mypy-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+> **Live demo:** not yet deployed. [`docs/DEPLOY.md`](docs/DEPLOY.md) is a step-by-step path to one (Fly.io + Timescale Cloud); the link belongs here once it is up.
+
 A trading simulation and analytics platform built on **PostgreSQL + TimescaleDB**,
 with business logic implemented as stored procedures and triggers rather than in
 the application layer.
@@ -10,8 +19,21 @@ over tick data, continuous aggregates for OHLC charts, and native compression on
 historical chunks.
 
 ```
-109 tests passing · 73% coverage · CI on Python 3.11/3.12 · PostgreSQL 16 / TimescaleDB 2.15
+124 tests passing · CI on Python 3.11/3.12 · ruff + mypy enforced · PostgreSQL 16 / TimescaleDB 2.15
 ```
+
+![Portfolio overview](docs/images/overview.jpg)
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/markets.jpg" alt="Market data, price chart, and quick trade panel"></td>
+<td width="50%"><img src="docs/images/portfolio.jpg" alt="Holdings with cost basis, and the wallet audit trail"></td>
+</tr>
+<tr>
+<td width="50%"><em>Live prices, OHLC chart, order book, and quick trade.</em></td>
+<td width="50%"><em>Holdings with weighted-average cost basis, and the wallet audit trail.</em></td>
+</tr>
+</table>
 
 ---
 
@@ -63,6 +85,7 @@ python -m backend.worker       # separate terminal: background jobs
 backend/
   config.py      Validated environment configuration; refuses weak secrets
   database.py    Lazy connection pool, transaction() context manager
+  money.py       Exact Decimal handling; money never becomes a float
   app.py         Flask app factory, two blueprints (pages + JSON API)
   worker.py      APScheduler jobs, run as a separate process
 scripts/
@@ -70,7 +93,7 @@ scripts/
   seed_demo.py   Generates synthetic market history
   ingest_data.py Live prices from Binance / Yahoo Finance
 migrations/      Numbered, incremental schema changes
-tests/           109 tests: security, cost basis, order matching, API flow
+tests/           124 tests: security, cost basis, order matching, API flow
 benchmarks/      Performance suite; results in benchmarks/RESULTS.md
 schema.sql       Baseline: tables, hypertables, triggers, procedures, views
 ```
@@ -142,6 +165,35 @@ CREATE UNIQUE INDEX idx_portfolio_unique_current ON portfolio(user_id, asset_id)
 This keeps full history — you can ask what a portfolio looked like on any past
 date — at the cost of writing three rows where a mutable table would write one.
 
+### Money is never a float
+
+The schema stores money as `NUMERIC`, and psycopg2 returns those columns as
+`Decimal`. Every value used to be passed through `float()` on its way into a
+JSON response, which handed the precision back at the one boundary the
+`NUMERIC` columns existed to protect. `backend/money.py` enforces two rules:
+
+**Nothing monetary becomes a float inside the process.** Input is parsed from
+its textual form (`Decimal("0.1")` is exact; `Decimal(0.1)` inherits the
+float's error), and arithmetic on balances stays in `Decimal`.
+
+**Money crosses the wire as a JSON string.** `JSON.parse` turns any JSON
+number into a float64 no matter how many digits the server wrote, so a numeric
+field silently discards the precision at the client. Quoting it keeps the
+digits intact and makes the client's rounding an explicit decision — the same
+choice Stripe and Coinbase make. The frontend parses at the point of display
+via `num()` / `fixed()` / `usd()` in `static/js/util.js`; nothing in the UI
+does arithmetic on money.
+
+```
+GET /api/prices  →  {"symbol": "BTC", "price": "61857.37000000", ...}
+```
+
+`tests/test_security.py` covers the parser (including `Decimal("NaN")` and
+`Decimal("Infinity")`, which `float()`-based validation would have caught but
+a naive `Decimal()` port would not), and `test_api_flow.py` asserts that three
+deposits of 0.10, 0.20 and 0.30 total exactly 0.60 — which they do not in
+float64.
+
 ### Triggers
 
 | Trigger | Fires on | Effect |
@@ -209,23 +261,29 @@ open, expiring orders turns that into an index-only scan — measured at
 ## Testing
 
 Every push runs the full suite in GitHub Actions against a real TimescaleDB
-service container, on Python 3.11 and 3.12, plus a security job (secret scan,
-`pip-audit`, `bandit`) and a job that builds the Docker stack and smoke-tests
-the running API.
+service container, on Python 3.11 and 3.12, plus a lint/type job (`ruff check`,
+`ruff format --check`, `mypy`), a security job (secret scan, `pip-audit`,
+`bandit`) and a job that builds the Docker stack and smoke-tests the running
+API.
 
 ```bash
 docker compose up -d db     # TimescaleDB on localhost:5433
-pytest                      # 109 tests
+pytest                      # 124 tests
 pytest -m "not db"          # security tests only, no database needed
 pytest --cov=backend --cov-report=term-missing
+
+ruff check . && ruff format --check . && mypy    # what CI enforces
 ```
+
+Lint rules and type settings live in `pyproject.toml`, so a local run and a CI
+run cannot disagree about what counts as a failure.
 
 Database tests create and drop a dedicated `temporal_test` database from
 `schema.sql`, so they never touch development data.
 
 | File | Covers |
 |---|---|
-| `test_security.py` | Auth, CSRF, CORS, input validation (42 tests, no DB) |
+| `test_security.py` | Auth, CSRF, CORS, rate limiting, exact-decimal parsing |
 | `test_portfolio.py` | Weighted average cost basis, realized P&L, bi-temporal versioning |
 | `test_trading.py` | Order validation, limit/stop-loss matching, expiry, concurrency |
 | `test_api_flow.py` | Register → login → fund → trade → inspect → log out |
@@ -234,6 +292,11 @@ Database tests create and drop a dedicated `temporal_test` database from
 
 ## Security
 
+- **Rate limiting** on `/api/login` (10/min, 60/hour) and `/api/register`
+  (5/hour), keyed on client IP. Without it, bcrypt verification is an
+  unmetered CPU cost any single client can impose, and password guessing is
+  free. Keyed on IP rather than username deliberately: a username key lets an
+  attacker lock a victim out by guessing against their account on purpose
 - **bcrypt** password hashing, with a 72-byte guard because bcrypt truncates
   silently beyond that
 - **CSRF protection** on every state-changing request (Flask-WTF). `fetch` is
@@ -249,6 +312,22 @@ Database tests create and drop a dedicated `temporal_test` database from
 - **Generic error messages.** Database exceptions are logged server-side; only
   deliberate business-rule messages ("Insufficient balance") reach the client
 - **Output escaping** on user-controlled values rendered into `innerHTML`
+- **Proxy headers are not trusted by default.** `X-Forwarded-For` is only read
+  when `TRUST_PROXY_HEADERS` is set, which should happen only behind a proxy
+  that overwrites it. Trusting it with nothing in front would let a client
+  send a different address per request and get a fresh rate-limit bucket each
+  time — worse than no limiter, because it looks like there is one
+
+Two honest limits on the rate limiting:
+
+- Counters default to in-process (`memory://`), so with `--workers 2` a client
+  gets twice the configured allowance before being refused. Set
+  `RATELIMIT_STORAGE_URI` to Redis for a shared counter.
+- CSRF validation runs before the view, so requests without a valid token are
+  rejected at 400 without consuming limiter budget. That is the right order
+  for real attacks — an attacker who fetches a token *is* counted, verified in
+  `tests/test_security.py::TestRateLimiting` — but it does mean a token-less
+  flood is bounded by the CSRF check rather than by the limiter.
 
 ---
 
@@ -265,6 +344,11 @@ All settings come from the environment; see `.env.example` for the full list.
 | `CORS_ORIGINS` | no | empty | Comma-separated; empty = same-origin |
 | `ENABLE_SCHEDULER` | no | `true` | `false` in `web`, `true` in `worker` |
 | `MAX_DEPOSIT` | no | `500000` | Per-deposit cap |
+| `RATELIMIT_ENABLED` | no | `true` | Off only for local load testing |
+| `RATELIMIT_STORAGE_URI` | no | `memory://` | Use Redis to share across workers |
+| `RATELIMIT_LOGIN` | no | `10 per minute;60 per hour` | Per client IP |
+| `RATELIMIT_REGISTER` | no | `5 per hour` | Per client IP |
+| `TRUST_PROXY_HEADERS` | no | `false` | Enable only behind a real proxy |
 
 ---
 
@@ -282,9 +366,10 @@ volatility, leaderboard, most-traded assets.
 | Layer | Technology |
 |---|---|
 | Database | PostgreSQL 16, TimescaleDB 2.15 |
-| Backend | Flask 3, psycopg2, bcrypt, Flask-WTF |
+| Backend | Flask 3, psycopg2, bcrypt, Flask-WTF, Flask-Limiter |
 | Frontend | Jinja2, vanilla JS, Chart.js |
 | Jobs | APScheduler |
 | Serving | gunicorn |
 | Data | Binance API, Yahoo Finance (yfinance) |
 | Tests | pytest, pytest-cov |
+| Quality | ruff (lint + format), mypy |

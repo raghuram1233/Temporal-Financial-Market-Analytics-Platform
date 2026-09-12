@@ -1,0 +1,49 @@
+# Tool configuration only. Runtime dependencies stay in requirements.txt so
+# the Docker image can install them without building this project as a package.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "migrations"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear: likely bugs, not style
+    "UP",   # pyupgrade
+    "C4",   # comprehension simplifications
+    "SIM",  # simplifications
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",    # line length is enforced by the formatter, not the linter
+    "B008",    # Flask/Click idioms rely on calls in argument defaults
+    "SIM108",  # ternaries are not always clearer than an if/else
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on behaviour; unused-import and long-line rules add noise there.
+"tests/*" = ["B011"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["backend"]
+# The codebase is being typed incrementally: this is the strictest setting
+# that passes today. Tighten as annotations are added.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# Third-party packages without bundled type information.
+module = ["yfinance.*", "apscheduler.*", "flask_cors.*", "psycopg2.*"]
+ignore_missing_imports = true

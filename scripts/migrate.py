@@ -51,9 +51,8 @@ def ensure_ledger():
 
 def applied_versions():
     ensure_ledger()
-    rows = database.query_all(
-        "SELECT version, checksum FROM schema_migrations ORDER BY version")
-    return {version: digest for version, digest in rows}
+    rows = database.query_all("SELECT version, checksum FROM schema_migrations ORDER BY version")
+    return dict(rows)
 
 
 def apply_one(path):
@@ -80,12 +79,11 @@ def show_status():
         version = path.stem
         if version in applied:
             when = database.query_value(
-                "SELECT applied_at FROM schema_migrations WHERE version = %s",
-                (version,))
+                "SELECT applied_at FROM schema_migrations WHERE version = %s", (version,)
+            )
             # A changed checksum means the file was edited after being applied,
             # which silently diverges this database from the repository.
-            drifted = applied[version] not in (
-                None, checksum(path.read_text(encoding="utf-8")))
+            drifted = applied[version] not in (None, checksum(path.read_text(encoding="utf-8")))
             label = "CHANGED" if drifted else "applied"
             print(f"{version:<40} {label:<10} {when:%Y-%m-%d %H:%M:%S}")
         else:
@@ -102,10 +100,12 @@ def show_status():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--status", action="store_true",
-                        help="show applied and pending migrations, then exit")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="list what would run without applying it")
+    parser.add_argument(
+        "--status", action="store_true", help="show applied and pending migrations, then exit"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="list what would run without applying it"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -136,8 +136,7 @@ def main():
         logger.info("  applied %s", path.stem)
 
     if not args.dry_run:
-        logger.info("Done. %d migrations applied in total.",
-                    len(applied) + len(pending))
+        logger.info("Done. %d migrations applied in total.", len(applied) + len(pending))
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ never touch development data.
 
 import os
 import pathlib
+from decimal import Decimal
 
 import psycopg2
 import pytest
@@ -22,6 +23,7 @@ TEST_DB_NAME = os.getenv("TEST_DB_NAME", "temporal_test")
 def _admin_dsn():
     """Connection settings for the maintenance database."""
     from backend import config
+
     return {
         "host": config.DB_HOST,
         "port": config.DB_PORT,
@@ -50,8 +52,9 @@ def database_url():
     conn = psycopg2.connect(**admin)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-            sql.Identifier(TEST_DB_NAME)))
+        cur.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(TEST_DB_NAME))
+        )
         cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(TEST_DB_NAME)))
     conn.close()
 
@@ -71,8 +74,9 @@ def database_url():
     conn = psycopg2.connect(**admin)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-            sql.Identifier(TEST_DB_NAME)))
+        cur.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(TEST_DB_NAME))
+        )
     conn.close()
 
 
@@ -119,8 +123,7 @@ def asset_id(clean_db):
     aid = row[0]
     # place_order() reads latest_prices, which the market_data trigger feeds.
     clean_db.execute_query(
-        "INSERT INTO market_data (asset_id, price, time, source) "
-        "VALUES (%s, %s, NOW(), 'test')",
+        "INSERT INTO market_data (asset_id, price, time, source) VALUES (%s, %s, NOW(), 'test')",
         (aid, 100.00),
     )
     return aid
@@ -129,12 +132,14 @@ def asset_id(clean_db):
 @pytest.fixture
 def set_price(clean_db):
     """Push a new market price for an asset, updating the latest-price cache."""
+
     def _set(aid, price):
         clean_db.execute_query(
             "INSERT INTO market_data (asset_id, price, time, source) "
             "VALUES (%s, %s, NOW(), 'test')",
             (aid, price),
         )
+
     return _set
 
 
@@ -162,10 +167,34 @@ def make_user(clean_db):
 
 
 @pytest.fixture
+def money_field():
+    """Read a monetary field out of a JSON response body as a Decimal.
+
+    Asserts the wire format on the way through. Money is serialised as a
+    JSON string, so a float arriving here means a route has regressed to
+    the old float() output and quietly lost precision again.
+    """
+
+    def _read(value):
+        assert isinstance(value, str), (
+            f"money must serialise as a string, got {type(value).__name__}: {value!r}"
+        )
+        return Decimal(value)
+
+    return _read
+
+
+@pytest.fixture
 def app():
-    """Flask app with CSRF disabled so tests can exercise the views directly."""
+    """Flask app with CSRF disabled so tests can exercise the views directly.
+
+    Rate limiting is off here too: most tests log in repeatedly and would
+    otherwise start tripping the login limiter partway through a run. The
+    tests that assert the limiter works use the `limited_client` fixture.
+    """
     from backend.app import create_app
-    return create_app(TESTING=True, WTF_CSRF_ENABLED=False)
+
+    return create_app(TESTING=True, WTF_CSRF_ENABLED=False, RATELIMIT_ENABLED=False)
 
 
 @pytest.fixture
@@ -174,7 +203,24 @@ def client(app):
 
 
 @pytest.fixture
+def limited_client(clean_db):
+    """Client for an app with rate limiting switched on.
+
+    The limiter's in-memory storage lives on a module-level singleton, so it
+    is reset around each test; otherwise counts leak between tests and the
+    order they run in decides whether they pass.
+    """
+    from backend.app import create_app, limiter
+
+    limiter.reset()
+    app = create_app(TESTING=True, WTF_CSRF_ENABLED=False, RATELIMIT_ENABLED=True)
+    yield app.test_client()
+    limiter.reset()
+
+
+@pytest.fixture
 def csrf_app():
     """Flask app with CSRF left ON, for the tests asserting it is enforced."""
     from backend.app import create_app
+
     return create_app(TESTING=True)

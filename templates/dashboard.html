@@ -326,7 +326,7 @@
             <tr>
                 <td>${i + 1}</td>
                 <td><strong>${escapeHtml(d.username)}</strong></td>
-                <td class="${d.total_pl >= 0 ? 'pos' : 'neg'}">$${d.total_pl.toFixed(2)}</td>
+                <td class="${num(d.total_pl) >= 0 ? 'pos' : 'neg'}">$${fixed(d.total_pl)}</td>
             </tr>
         `).join('') || '<tr><td colspan="3">No leaderboard data</td></tr>';
 
@@ -337,7 +337,7 @@
             <tr>
                 <td><strong>${escapeHtml(d.symbol)}</strong></td>
                 <td>${d.count}</td>
-                <td>$${d.volume.toLocaleString()}</td>
+                <td>${usd(d.volume)}</td>
             </tr>
         `).join('') || '<tr><td colspan="3">No asset stats data</td></tr>';
 
@@ -366,9 +366,11 @@
         const data = await res.json();
 
         const labels = data.map(d => new Date(d.time).toLocaleDateString([], { day: '2-digit', month: 'short' }));
-        const prices = data.map(d => d.price);
-        const smas = data.map(d => d.sma_7);
-        const volatilities = data.map(d => d.volatility);
+        // Chart.js datasets must be numbers. null is preserved rather than
+        // parsed to 0: a gap in the SMA window should render as a gap.
+        const prices = data.map(d => num(d.price));
+        const smas = data.map(d => d.sma_7 === null ? null : num(d.sma_7));
+        const volatilities = data.map(d => d.volatility === null ? null : num(d.volatility));
 
         // SMA Chart
         const ctxSma = document.getElementById('smaChart').getContext('2d');
@@ -447,22 +449,24 @@
                     <span class="symbol">${escapeHtml(p.symbol)}</span>
                     <span class="name">${escapeHtml(p.name || 'Market Asset')}</span>
                 </div>
-                <div class="asset-price">$${p.price.toFixed(2)}</div>
+                <div class="asset-price">$${fixed(p.price)}</div>
             </div>
         `).join('');
     }
 
+    // Money arrives as a decimal string; usd() parses it at the display
+    // boundary. See static/js/util.js.
     function fmtUsd(value) {
-        return `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        return usd(value);
     }
 
     async function loadHomeSnapshot() {
         if (currentPage !== 'home') return;
         const res = await fetch('/api/portfolio/stats');
         const stats = await res.json();
-        const invested = Number(stats.invested || 0);
-        const current = Number(stats.current_value || 0);
-        const cash = Number(stats.wallet_balance || 0);
+        const invested = num(stats.invested);
+        const current = num(stats.current_value);
+        const cash = num(stats.wallet_balance);
         const returns = current - invested;
         const returnsPct = invested > 0 ? (returns / invested) * 100 : 0;
 
@@ -511,9 +515,9 @@
                 <td>${new Date(t.time).toLocaleString()}</td>
                 <td><strong>${escapeHtml(t.symbol)}</strong></td>
                 <td><span class="badge ${t.type}">${t.type.toUpperCase()}</span></td>
-                <td>${t.quantity.toFixed(5)}</td>
-                <td>$${t.price.toFixed(2)}</td>
-                <td>$${t.total.toFixed(2)}</td>
+                <td>${fixed(t.quantity, 5)}</td>
+                <td>$${fixed(t.price)}</td>
+                <td>$${fixed(t.total)}</td>
             </tr>
         `).join('') || '<tr><td colspan="6" style="text-align:center">No transactions yet</td></tr>';
     }
@@ -543,11 +547,11 @@
             
             const rplElem = document.getElementById('global-realized-pl');
             rplElem.innerText = fmtUsd(pnlSummary.realized_pnl);
-            rplElem.className = `value ${pnlSummary.realized_pnl >= 0 ? 'pos' : 'neg'}`;
+            rplElem.className = `value ${num(pnlSummary.realized_pnl) >= 0 ? 'pos' : 'neg'}`;
 
             const uplElem = document.getElementById('global-unrealized-pl');
             uplElem.innerText = fmtUsd(pnlSummary.unrealized_pnl);
-            uplElem.className = `value ${pnlSummary.unrealized_pnl >= 0 ? 'pos' : 'neg'}`;
+            uplElem.className = `value ${num(pnlSummary.unrealized_pnl) >= 0 ? 'pos' : 'neg'}`;
 
             if (currentPage === "markets") {
                 filterAssets(); // Keep search filter active
@@ -561,11 +565,11 @@
                 tbody.innerHTML = portfolio.map(item => `
                     <tr>
                         <td><strong>${escapeHtml(item.symbol)}</strong></td>
-                        <td>${item.quantity.toFixed(5)}</td>
-                        <td>$${item.avg_price.toFixed(2)}</td>
-                        <td>$${item.current_price.toFixed(2)}</td>
-                        <td>$${item.current_value.toFixed(2)}</td>
-                        <td class="${item.unrealized_pl >= 0 ? 'pos' : 'neg'}">$${item.unrealized_pl.toFixed(2)}</td>
+                        <td>${fixed(item.quantity, 5)}</td>
+                        <td>$${fixed(item.avg_price)}</td>
+                        <td>$${fixed(item.current_price)}</td>
+                        <td>$${fixed(item.current_value)}</td>
+                        <td class="${num(item.unrealized_pl) >= 0 ? 'pos' : 'neg'}">$${fixed(item.unrealized_pl)}</td>
                     </tr>
                 `).join('');
             }
@@ -598,15 +602,17 @@
         if (!tbody) return;
 
         tbody.innerHTML = data.map(item => {
-            const change = item.change;
+            // Parsed explicitly: relational operators would coerce the
+            // decimal string for us, but silently, and only for some inputs.
+            const change = num(item.change);
             const type = change >= 0 ? 'Deposit' : 'Withdrawal';
             return `
                 <tr>
                     <td>${new Date(item.timestamp).toLocaleString()}</td>
                     <td class="${change >= 0 ? 'pos' : 'neg'}">${type}</td>
                     <td class="${change >= 0 ? 'pos' : 'neg'}">$${Math.abs(change).toFixed(2)}</td>
-                    <td>$${item.old_value.toFixed(2)}</td>
-                    <td>$${item.new_value.toFixed(2)}</td>
+                    <td>$${fixed(item.old_value)}</td>
+                    <td>$${fixed(item.new_value)}</td>
                 </tr>
             `;
         }).join('');
@@ -638,7 +644,7 @@
                 ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 : date.toLocaleDateString([], { day: '2-digit', month: 'short' });
         });
-        const values = data.map(d => chartPeriod === "1D" ? d.price : d.close);
+        const values = data.map(d => num(chartPeriod === "1D" ? d.price : d.close));
 
         assetChart = new Chart(ctx, {
             type: 'line',
@@ -681,10 +687,10 @@
             const bid = data.bids?.[i];
             const ask = data.asks?.[i];
             rows += `<tr>
-                <td class="pos">${bid ? bid.quantity.toFixed(4) : "-"}</td>
-                <td class="pos">${bid ? "$" + bid.price.toFixed(2) : "-"}</td>
-                <td class="neg">${ask ? "$" + ask.price.toFixed(2) : "-"}</td>
-                <td class="neg">${ask ? ask.quantity.toFixed(4) : "-"}</td>
+                <td class="pos">${bid ? fixed(bid.quantity, 4) : "-"}</td>
+                <td class="pos">${bid ? "$" + fixed(bid.price) : "-"}</td>
+                <td class="neg">${ask ? "$" + fixed(ask.price) : "-"}</td>
+                <td class="neg">${ask ? fixed(ask.quantity, 4) : "-"}</td>
             </tr>`;
         }
         tbody.innerHTML = rows || '<tr><td colspan="4" style="text-align:center">No data</td></tr>';
@@ -700,8 +706,8 @@
             <tr>
                 <td>${new Date(t.time).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</td>
                 <td class="${t.side === 'buy' ? 'pos' : 'neg'}">${String(t.side || '').toUpperCase()}</td>
-                <td class="${t.side === 'buy' ? 'pos' : 'neg'}">$${t.price.toFixed(2)}</td>
-                <td>${t.quantity.toFixed(4)}</td>
+                <td class="${t.side === 'buy' ? 'pos' : 'neg'}">$${fixed(t.price)}</td>
+                <td>${fixed(t.quantity, 4)}</td>
             </tr>
         `).join('') || '<tr><td colspan="4" style="text-align:center">No trades</td></tr>';
     }
@@ -710,7 +716,7 @@
         const priceInput = document.getElementById('market-trade-price');
         const selected = pricesData.find(p => p.asset_id == selectedAssetId);
         if (priceInput && selected) {
-            priceInput.value = `$${selected.price.toFixed(2)}`;
+            priceInput.value = `$${fixed(selected.price)}`;
         }
     }
 
@@ -731,7 +737,7 @@
         const assetId = document.getElementById('assetSelect').value;
         const asset = pricesData.find(p => p.asset_id == assetId);
         if (asset) {
-            document.getElementById('current-trade-price').innerText = `$${asset.price.toFixed(2)}`;
+            document.getElementById('current-trade-price').innerText = `$${fixed(asset.price)}`;
             calculateTotal();
         }
     }
@@ -741,7 +747,7 @@
         const qty = parseFloat(document.getElementById('quantity').value) || 0;
         const asset = pricesData.find(p => p.asset_id == assetId);
         if (asset) {
-            const total = asset.price * qty;
+            const total = num(asset.price) * qty;
             document.getElementById('estimated-total').innerText = fmtUsd(total);
         }
     }
